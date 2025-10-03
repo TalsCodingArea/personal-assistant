@@ -1,0 +1,28 @@
+version: "3.9"
+services:
+  bot:
+    image: python:3.11-slim
+    working_dir: /app
+    env_file: .env
+    command: ["bash","-lc","pip install --no-cache-dir -r requirements.txt && python -u app.py"]
+    volumes:
+      - ./app:/app
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SLACK_BOLT_LOG_LEVEL: "debug"
+
+  # Optional services; keep them but they aren't required for Socket Mode
+  redis:
+    image: redis:7
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    mem_limit: 6g
+    volumes: ["ollama:/root/.ollama"]
+    ports: ["11434:11434"]
+    restart: unless-stopped
+
+volumes:
+  ollama:
