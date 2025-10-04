@@ -1,5 +1,5 @@
-import os, re, json
-from typing import Dict, Any
+import os, re, json, sys, time, shutil, subprocess
+from typing import Dict, Any, Optional
 import httpx
 from slack_bolt import App as SlackApp
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -7,6 +7,33 @@ from base_scripts import *
 import importlib.util
 import inspect
 from dotenv import load_dotenv
+
+
+def run_ollama(prompt: str) -> str:
+    """
+    Sends a prompt to the local Ollama server using the Qwen 2.5 1.5B Instruct model
+    and returns the model's response text.
+    """
+    OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    MODEL_NAME = os.getenv("ROUTER_MODEL", "qwen2.5:1.5b-instruct")
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": MODEL_NAME,
+                    "prompt": prompt,
+                    "stream": False
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("response", "").strip()
+
+    except Exception as e:
+        print(f"[Error] Ollama request failed: {e}")
+        return ""
 
 load_dotenv()
 
@@ -61,86 +88,10 @@ ROUTER_SYSTEM = (
 
 ASSISTANCE_SYSTEM = (
     "You are a personal assistant. Help the user with their requests.\n"
-    "Write a playful response that explains the starting process.\n"
+    "Write a playful one-line response that explains the starting process.\n"
 )
 
-def openai_tool_decider(message: str) -> Dict[str, Any]:
-    prompt = f"{ROUTER_SYSTEM}\nThese are the available tools:\n{TOOLS}\nUser's message: {message}"
-    try:
-        response = ask_openai(prompt, model="gpt-4o-mini", temperature=0)
-        # Extract JSON object from the response
-        match = re.search(r"\{.*\}", response, re.DOTALL)
-        if match:
-            decision = json.loads(match.group(0))
-            tool = decision.get("tool", "none")
-            args = decision.get("args", {})
-            if tool in TOOLS:
-                return {"tool": tool, "args": args}
-            else:
-                return {"tool": "none", "args": {}}
-    except Exception as e:
-        print(f"[router] error: {e}", flush=True)
-    return {"tool": "none", "args": {}}
 
-def openai_assistance(chosen_tool: str) -> str:
-    try:
-        prompt = f"{ASSISTANCE_SYSTEM}\nThis is the context for the chosen tool: {TOOLS[chosen_tool]['description']}\nUser: Hi!\nAssistant:"
-    except Exception as e:
-        return "Couldn't find the right tool."
-    try:
-        return ask_openai(prompt, model="gpt-4o-mini", temperature=0.7)
-    except Exception as e:
-        print(f"[assistant] error: {e}", flush=True)
-    return "Hi! Sorry, I'm having trouble right now."
-
-def ollama_tool_decider(message: str) -> Dict[str, Any]:
-    prompt = f"{ROUTER_SYSTEM}\nThese are the available tools:\n{TOOLS}\nUser's message: {message}"
-    try:
-        with httpx.Client(timeout=40.0) as client:
-            resp = client.post(
-                f"{OLLAMA}/api/generate",
-                json={"model": ROUTER_MODEL, "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            response_text = resp.json().get("response", "").strip()
-            # Extract JSON object from the response
-            match = re.search(r"\{.*\}", response_text, re.DOTALL)
-            if match:
-                decision = json.loads(match.group(0))
-                tool = decision.get("tool", "none")
-                args = decision.get("args", {})
-                if tool in TOOLS:
-                    return {"tool": tool, "args": args}
-                else:
-                    return {"tool": "none", "args": {}}
-    except Exception as e:
-        print(f"[router] error: {e}", flush=True)
-    return {"tool": "none", "args": {}}
-
-def ollama_assistance(chosen_tool: str) -> str:
-    try:
-        prompt = f"{ASSISTANCE_SYSTEM}\nThis is the context for the chosen tool: {TOOLS[chosen_tool]['description']}\nUser: Hi!\nAssistant:"
-    except Exception as e:
-        return "Couldn't find the right tool."
-    try:
-        with httpx.Client(timeout=40.0) as client:
-            resp = client.post(
-                f"{OLLAMA}/api/generate",
-                json={"model": ROUTER_MODEL, "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-    except Exception as e:
-        print(f"[assistant] error: {e}", flush=True)
-    return "Hi! "
-
-def keyword_fallback(message: str) -> Dict[str, Any]:
-    m = (message or "").lower()
-    if any(k in m for k in ("budget", "spend", "expense")):
-        return {"tool": "budget_check", "args": {"timeframe": "week"}}
-    if any(k in m for k in ("morning", "brief", "today")):
-        return {"tool": "compose_day_brief", "args": {}}
-    return {"tool": "none", "args": {}}
 
 def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
     try:
@@ -150,15 +101,24 @@ def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
         return f"⚠️ Tool `{tool}` failed: {e}"
 
 def handle_message_via_router(text: str) -> str:
-    decision = openai_tool_decider(text)
-    greeting_message = openai_assistance(decision.get("tool", "none"))
+    decision = run_ollama(
+        f"{ROUTER_SYSTEM}\n"
+        f"Available tools: {json.dumps(TOOLS)}\n"
+        f"User message: {text}\n"
+        f"Respond in JSON format."
+    )
+    greeting_message = run_ollama(
+        f"{ASSISTANCE_SYSTEM}\n"
+        f"User message: {text}\n"
+        f"The tool you chose: {decision}\n"
+    )
     return greeting_message, decision.get("tool", "none"), decision.get("args", {})
 
 
-# print("Processing your request...")
-# greeting_message, tool, args = (handle_message_via_router("I'm with my girlfriend and we want to watch a romantic comedy movie. Can you suggest one?"))
-# print(greeting_message)
-# print(run_tool_and_format(tool, args))
+print("Processing your request...")
+greeting_message, tool, args = (handle_message_via_router("I'm with my girlfriend and we want to watch a romantic comedy movie. Can you suggest one?"))
+print(greeting_message)
+print(run_tool_and_format(tool, args))
 
 # ------------ Slack handlers -------------
 @app.event("message")
