@@ -94,7 +94,8 @@ def suggest_movie(prompt: str) -> str:
     response = ask_openai(f"""Suggest up to 5 movies based on the following prompt: {prompt}. 
                           These are the movies properties in the database: {' | '.join(str(movie) for movie in movies_data)}, 
                           if you suggest a movie which has a 'Last Watched' parameter, please take that into account and point it out. 
-                          Return a playful response.""")
+                          Return a playful response.
+                          The response will be sent over Slack, so make sure it's concise, engaging and match the way Slack renders messages.""")
     return response.strip()
 
 def get_monthly_financial_evaluation(month: str, year: int) -> str:

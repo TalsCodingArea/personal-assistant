@@ -9,31 +9,23 @@ import inspect
 from dotenv import load_dotenv
 
 
-def run_ollama(prompt: str) -> str:
-    """
-    Sends a prompt to the local Ollama server using the Qwen 2.5 1.5B Instruct model
-    and returns the model's response text.
-    """
-    OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    MODEL_NAME = os.getenv("ROUTER_MODEL", "qwen2.5:1.5b-instruct")
+def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.5b-instruct") -> str:
+    base = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": 0}
+    }
+    if json_mode:
+        payload["format"] = "json"
 
-    try:
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": MODEL_NAME,
-                    "prompt": prompt,
-                    "stream": False
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "").strip()
-
-    except Exception as e:
-        print(f"[Error] Ollama request failed: {e}")
-        return ""
+    with httpx.Client(timeout=60.0) as client:
+        # Probe the server so failures are obvious
+        client.get(f"{base}/api/version").raise_for_status()
+        r = client.post(f"{base}/api/generate", json=payload)
+        r.raise_for_status()
+        return r.json().get("response", "").strip()
 
 load_dotenv()
 
@@ -105,14 +97,17 @@ def handle_message_via_router(text: str) -> str:
         f"{ROUTER_SYSTEM}\n"
         f"Available tools: {json.dumps(TOOLS)}\n"
         f"User message: {text}\n"
-        f"Respond in JSON format."
+        'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
     )
+    decision = json.loads(decision)
     greeting_message = run_ollama(
         f"{ASSISTANCE_SYSTEM}\n"
         f"User message: {text}\n"
-        f"The tool you chose: {decision}\n"
+        f"The process that is starting: {TOOLS[decision['tool']]['description']}\n"
+        'Return ONLY JSON: {"response":"one-liner response"}', json_mode=True
     )
-    return greeting_message, decision.get("tool", "none"), decision.get("args", {})
+    greeting_message = json.loads(greeting_message)
+    return greeting_message["response"], decision["tool"], decision["args"]
 
 
 print("Processing your request...")
