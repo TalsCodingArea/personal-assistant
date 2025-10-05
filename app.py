@@ -1,5 +1,5 @@
 import os, re, json, sys, time, shutil, subprocess
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import httpx
 from slack_bolt import App as SlackApp
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -7,7 +7,9 @@ from base_scripts import *
 import importlib.util
 import inspect
 from dotenv import load_dotenv
+from slack_sdk.errors import SlackApiError
 
+load_dotenv()
 
 def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.5b-instruct") -> str:
     base = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
@@ -26,9 +28,6 @@ def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.
         r = client.post(f"{base}/api/generate", json=payload)
         r.raise_for_status()
         return r.json().get("response", "").strip()
-
-load_dotenv()
-
 
 def load_module_from_file(filepath):
     """Dynamically load a Python module from a file path."""
@@ -68,6 +67,7 @@ BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://ollama:11434").rstrip("/")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "llama3.1:8b")
+TARGET_CHANNEL_ID = "C09DXFG7P70"
 
 # --- SLACK APP ---
 app = SlackApp(token=BOT_TOKEN)
@@ -79,11 +79,36 @@ ROUTER_SYSTEM = (
 )
 
 ASSISTANCE_SYSTEM = (
-    "You are a personal assistant. Help the user with their requests.\n"
-    "Write a playful one-line response that explains the starting process.\n"
+    "You are a personal assistant. The user has triggered a request for a certain process to start.\n"
+    "Write a playful one-line response that explains the process that is starting according to the docstring.\n"
 )
 
 
+def resolve_sender_name(client, event):
+    """
+    Return a human-readable sender name for any message:
+    - Human users -> real_name or display_name
+    - Bots/integrations -> bot_profile name
+    - Fallback to user ID if needed
+    """
+    # If message from a normal user
+    user_id = event.get("user")
+    if user_id:
+        try:
+            ui = client.users_info(user=user_id)
+            profile = ui.get("user", {}).get("profile", {})
+            return profile.get("display_name") or profile.get("real_name") or user_id
+        except SlackApiError as e:
+            print(f"[users_info error] {e}")
+            return user_id
+
+    # If message from a bot/integration
+    bot_profile = event.get("bot_profile") or {}
+    if bot_profile:
+        return bot_profile.get("name") or bot_profile.get("real_name") or "Bot"
+
+    # Edge cases (system messages, etc.)
+    return "Unknown Sender"
 
 def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
     try:
@@ -92,51 +117,26 @@ def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
     except Exception as e:
         return f"⚠️ Tool `{tool}` failed: {e}"
 
-def handle_message_via_router(text: str) -> str:
-    decision = run_ollama(
-        f"{ROUTER_SYSTEM}\n"
-        f"Available tools: {json.dumps(TOOLS)}\n"
-        f"User message: {text}\n"
-        'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
-    )
-    decision = json.loads(decision)
-    greeting_message = run_ollama(
-        f"{ASSISTANCE_SYSTEM}\n"
-        f"User message: {text}\n"
-        f"The process that is starting: {TOOLS[decision['tool']]['description']}\n"
-        'Return ONLY JSON: {"response":"one-liner response"}', json_mode=True
-    )
-    greeting_message = json.loads(greeting_message)
+def handle_message_via_router(text: str) -> Tuple[str, str, Dict[str, Any]]:
+    try:
+        decision = run_ollama(
+            f"{ROUTER_SYSTEM}\n"
+            f"Available tools: {json.dumps(TOOLS)}\n"
+            f"User message: {text}\n"
+            'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
+        )
+        decision = json.loads(decision)
+        greeting_message = run_ollama(
+            f"{ASSISTANCE_SYSTEM}\n"
+            f"The process's docstring is: {TOOLS[decision['tool']]['description']}\n"
+            'Return ONLY JSON: {"response":"one-liner response"}', json_mode=True
+        )
+        greeting_message = json.loads(greeting_message)
+    except Exception as e:
+        return f"⚠️ Router call failed: {e}", "", {}
     return greeting_message["response"], decision["tool"], decision["args"]
 
-
-print("Processing your request...")
-greeting_message, tool, args = (handle_message_via_router("I'm with my girlfriend and we want to watch a romantic comedy movie. Can you suggest one?"))
-print(greeting_message)
-print(run_tool_and_format(tool, args))
-
 # ------------ Slack handlers -------------
-@app.event("message")
-def on_dm(body, say, logger):
-    ev = body.get("event", {})
-    if ev.get("channel_type") == "im" and not ev.get("bot_id"):
-        text = ev.get("text","")
-        logger.info(f"[DM] {text}")
-        say(handle_message_via_router(text))
-
-@app.event("message")
-def on_channel_message(body, say, logger):
-    ev = body.get("event", {})
-    if ev.get("channel_type") in ("channel", "general") and not ev.get("bot_id"):
-        text = ev.get("text","")
-        logger.info(f"[channel] {text}")
-        if re.search(r"<@[^>]+>", text):  # bot mentioned
-            text = re.sub(r"<@[^>]+>\s*", "", text)
-            say("Processing your request...")
-            greeting_message, tool, args = (handle_message_via_router(text))
-            say(greeting_message)
-            say(run_tool_and_format(tool, args))
-
 @app.event("app_mention")
 def on_mention(body, say, logger):
     text = body.get("event", {}).get("text", "")
@@ -145,6 +145,34 @@ def on_mention(body, say, logger):
     greeting_message, tool, args = (handle_message_via_router(text))
     say(greeting_message)
     say(run_tool_and_format(tool, args))
+
+@app.event("message")
+def on_message_events(body, event, client, logger, say):
+    """
+    Listens to all message events the bot receives.
+    Filters to a single channel by ID.
+    Skips non-standard message subtypes (joins, pins, edits).
+    Prints the sender's name.
+    """
+    # Only process plain messages in the target channel
+    if event.get("channel") != TARGET_CHANNEL_ID:
+        return
+
+    # Ignore non-message content (edits, joins, etc.)
+    subtype = event.get("subtype")
+    if subtype and subtype not in (None, "thread_broadcast"):
+        return
+
+    sender = resolve_sender_name(client, event)
+    text = event.get("text", "")
+
+    if sender == "Tal Shaubi":
+        greeting_message, tool, args = (handle_message_via_router(text))
+        say(greeting_message)
+        if tool != "":
+            say(run_tool_and_format(tool, args))
+        else:
+            say("⚠️ No suitable tool found for this request.")
 
 @app.command("/help")
 def help_command(ack, say):

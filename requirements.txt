@@ -6,3 +6,4 @@ orjson==3.10.7
 notion-client==2.3.0
 openai==1.82.1
 python-dotenv==1.1.1
+ollama==0.1.4
