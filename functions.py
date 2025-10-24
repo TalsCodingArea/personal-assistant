@@ -1,3 +1,4 @@
+from xmlrpc import client
 from base_scripts import *
 import os
 from datetime import datetime
@@ -119,3 +120,50 @@ def get_monthly_financial_evaluation(month: str, year: int) -> str:
     }
     expenses = get_notion_pages(notion_client, os.environ["EXPENSES_DATABASE_ID"], filter=filters)
     
+def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
+    """Upload a receipt pdf to the notion expenses database and process it using OpenAI to extract relevant information and provide an evaluation.
+    Args:
+        pdf_url (str): The URL of the receipt pdf.
+    Returns:
+        str: Confirmation message after processing the receipt along with an evaluation.
+    """
+    file_id = upload_pdf_to_openai(pdf_url, client=openai_client)
+
+    instructions = (
+        "You extract receipts. Return STRICT JSON with keys: "
+        "vendor (string), date (YYYY-MM-DD), category (string) for one of the options [Groceries 🛒, Decor 🪑], "
+        "total (number), items (array of {name, qty (number|null), unit_price (number|null), line_total (number|null)}), "
+        "and comment (string) with a brief evaluation of whether the spending is expensive by Israeli standards. "
+        "If a value is missing, use null. Do not include extra text."
+    )
+    resp = openai_client.responses.create(
+        model="gpt-4o",
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": instructions},
+                    {"type": "input_file", "file_id": file_id},
+                ],
+            }
+        ],
+        temperature=0.2,
+    )
+    # The SDK provides a convenience property for plain text output:
+    clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
+    json_data = json.loads(clean_text)
+    # Add to Notion
+    properties = {
+        "Description": {"type": "title", "content": json_data.get("vendor")},
+        "Date": {"type": "date", "content": json_data.get("date")},
+        "Amount": {"type": "number", "content": json_data.get("total")},
+        "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": pdf_url}},
+        "Category": {"type": "multi_select", "content": ["Home 🏡"]},
+        "Sub Category": {"type": "multi_select", "content": [json_data.get("category")]},
+        "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
+        "Type": {"type": "select", "content": "Need"},
+        "Payment Method": {"type": "select", "content": "Credit"},
+    }
+    create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
+    open_ai_evaluation_and_confirmation = ask_openai(f"I have just added an expense to my Notion database with the following details: {json_data}. Provide a brief evaluation of the spending according to Israel's standards, and confirm that the expense has been logged.")
+    return open_ai_evaluation_and_confirmation.strip()

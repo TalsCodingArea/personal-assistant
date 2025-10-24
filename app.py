@@ -112,19 +112,23 @@ def resolve_sender_name(client, event):
 
 def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
     try:
-        data = FUNCTIONS[tool](args)
+        data = FUNCTIONS[tool](**args)
         return data
     except Exception as e:
         return f"⚠️ Tool `{tool}` failed: {e}"
 
 def handle_message_via_router(text: str) -> Tuple[str, str, Dict[str, Any]]:
     try:
-        decision = run_ollama(
-            f"{ROUTER_SYSTEM}\n"
-            f"Available tools: {json.dumps(TOOLS)}\n"
-            f"User message: {text}\n"
-            'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
-        )
+        if 'receipt' in text.lower():
+            url = re.search(r'(https?://\S+)', text).group(1)[:-1]
+            decision = f"{{\"tool\":\"receipt_url_to_notion_with_evaluation\",\"args\":{{\"pdf_url\":\"{url}\"}}}}"
+        else:
+            decision = run_ollama(
+                f"{ROUTER_SYSTEM}\n"
+                f"Available tools: {json.dumps(TOOLS)}\n"
+                f"User message: {text}\n"
+                'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
+            )
         decision = json.loads(decision)
         greeting_message = run_ollama(
             f"{ASSISTANCE_SYSTEM}\n"
