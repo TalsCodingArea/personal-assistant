@@ -200,6 +200,5 @@ def send_startup_message(client):
 if __name__ == "__main__":
     print("✅ Starting Slack bot with Ollama router...", flush=True)
     print(f"ENV OLLAMA={OLLAMA} MODEL={ROUTER_MODEL}", flush=True)
-    SocketModeHandler(app, APP_TOKEN).start()
-    print("✅ Slack bot started.", flush=True)
     send_startup_message(app.client)
+    SocketModeHandler(app, APP_TOKEN).start()
