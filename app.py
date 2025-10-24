@@ -188,8 +188,18 @@ def help_command(ack, say):
     )
     say(help_text)
 
+def send_startup_message(client):
+    try:
+        client.chat_postMessage(
+            channel=TARGET_CHANNEL_ID,
+            text="🤖 Personal Assistant Bot is now online and ready to assist you!"
+        )
+    except SlackApiError as e:
+        print(f"[startup message error] {e}")
+
 if __name__ == "__main__":
     print("✅ Starting Slack bot with Ollama router...", flush=True)
     print(f"ENV OLLAMA={OLLAMA} MODEL={ROUTER_MODEL}", flush=True)
     SocketModeHandler(app, APP_TOKEN).start()
     print("✅ Slack bot started.", flush=True)
+    send_startup_message(app.client)
