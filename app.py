@@ -83,6 +83,7 @@ ASSISTANCE_SYSTEM = (
     "Write a playful one-line response that explains the process that is starting according to the docstring.\n"
 )
 
+OPTIONS = {"Add a task": FUNCTIONS["add_to_things"], "Add a movie to watchlist": FUNCTIONS["add_movie"], "Log a receipt": FUNCTIONS["receipt_url_to_notion_with_evaluation"], "Log movie watched and rating": FUNCTIONS["log_movie_watch_and_rating"], "Get a movie suggestion": FUNCTIONS["suggest_movie"], "Get a financial summary": FUNCTIONS["get_monthly_financial_evaluation"]}
 
 def resolve_sender_name(client, event):
     """
@@ -119,16 +120,17 @@ def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
 
 def handle_message_via_router(text: str) -> Tuple[str, str, Dict[str, Any]]:
     try:
-        if 'receipt' in text.lower():
-            url = re.search(r'(https?://\S+)', text).group(1)[:-1]
-            decision = f"{{\"tool\":\"receipt_url_to_notion_with_evaluation\",\"args\":{{\"pdf_url\":\"{url}\"}}}}"
-        else:
-            decision = run_ollama(
-                f"{ROUTER_SYSTEM}\n"
-                f"Available tools: {json.dumps(TOOLS)}\n"
-                f"User message: {text}\n"
-                'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
-            )
+        choosen_option = run_ollama(
+            f"You are a tool router. Given the following options: {OPTIONS.items()}, choose the most appropriate tool for the user's message: '{text}'\n"
+            'Return only the tool name as a single line string.', json_mode=False, model=ROUTER_MODEL
+        )
+        decision = run_ollama(
+            f"The user said: '{text}'\n"
+            f"The description for the chosen tool '{OPTIONS[choosen_option]}' is: {TOOLS[choosen_option]['description']}\n"
+            f"The tool's arguments are: {TOOLS[choosen_option]['args']}\n"
+            "Based on the user's message, fill in the arguments as a JSON object with 'tool' and 'args' fields. Return ONLY JSON.",
+            json_mode=True, model=ROUTER_MODEL
+        )
         decision = json.loads(decision)
         greeting_message = run_ollama(
             f"{ASSISTANCE_SYSTEM}\n"
