@@ -1,7 +1,11 @@
-from xmlrpc import client
+import xmlrpc.client as xmlrpc_client
 from base_scripts import *
 import os
 from datetime import datetime
+import io
+import re
+import json
+import base64
 
 notion_client = Client(auth=os.environ["NOTION_API_KEY"])
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -129,26 +133,105 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
     """
     file_id = upload_pdf_to_openai(pdf_url, client=openai_client)
 
-    instructions = (
-        "You extract receipts. Return STRICT JSON with keys: "
-        "vendor (string), date (YYYY-MM-DD), category (string) for one of the options [Groceries 🛒, Decor 🪑], "
-        "total (number), items (array of {name, qty (number|null), unit_price (number|null), line_total (number|null)}), "
-        "and comment (string) with a brief evaluation of whether the spending is expensive by Israeli standards. "
-        "If a value is missing, use null. Do not include extra text."
-    )
-    resp = openai_client.responses.create(
+    # Quick readability probe (detect image-only PDFs)
+    probe = openai_client.responses.create(
         model="gpt-4o",
         input=[
             {
+                "role": "system",
+                "content": [
+                    {"type": "input_text", "text":
+                     "You may read and summarize user-provided documents that the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this PDF and requests a brief readability check."}
+                ],
+            },
+            {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": instructions},
+                    {"type": "input_text", "text":
+                     "Please read only page 1 of this store receipt PDF that I uploaded and own. If you can see selectable text, return the first 200 visible characters (trim whitespace). If there is no selectable text (scan/image-only), reply exactly: SCANNED_NO_TEXT."},
                     {"type": "input_file", "file_id": file_id},
                 ],
             }
         ],
-        temperature=0.2,
+        temperature=0,
     )
+    probe_text = probe.output_text.strip()
+    print("PROBE:", probe_text)
+
+    instructions = (
+        "You extract receipt data. The receipt may be in HEBREW (RTL). Perform OCR if needed. "
+        "Normalize numbers to use a period as the decimal separator. Currency is likely ILS. "
+        "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; convert to YYYY-MM-DD. "
+        "Return STRICT JSON ONLY with keys: "
+        "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from the options: [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+        "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
+        "Do not hallucinate; if a value is missing or unreadable, use null. No extra text."
+    )
+
+    if probe_text == "SCANNED_NO_TEXT":
+        # OCR fallback: render first pages to PNGs and send as images
+        _, pdf_bytes = fetch_pdf_bytes(pdf_url)
+        images = render_pdf_to_images(pdf_bytes, dpi=220, max_pages=2)
+
+        # Build data-URI images (avoid file-id compatibility issues)
+        image_inputs = []
+        for img_bytes in images:
+            data_uri = "data:image/png;base64," + base64.b64encode(img_bytes).decode("ascii")
+            image_inputs.append({"type": "input_image", "image_url": data_uri})
+
+        ocr_instructions = (
+            "This receipt is scanned (image-only). Perform OCR. The text may be HEBREW (RTL). "
+            "Normalize decimal separator to a period. Currency likely ILS. "
+            "Convert dates to YYYY-MM-DD (handle DD/MM/YYYY, DD.MM.YYYY, Hebrew month names). "
+            "Return STRICT JSON ONLY with keys: "
+            "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+            "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
+            "If a value is missing or unreadable, use null. No extra text."
+        )
+
+        resp = openai_client.responses.create(
+            model="gpt-4o",
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text":
+                         "You may read and extract data from documents the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this store receipt images extracted from a PDF."}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": ocr_instructions},
+                        *image_inputs,
+                    ],
+                }
+            ],
+            temperature=0.2,
+        )
+    else:
+        # Text is selectable; process the PDF directly
+        resp = openai_client.responses.create(
+            model="gpt-4o",
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text":
+                         "You may read and extract data from documents the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this store receipt PDF."}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": instructions},
+                        {"type": "input_file", "file_id": file_id},
+                    ],
+                }
+            ],
+            temperature=0.2,
+        )
+
     # The SDK provides a convenience property for plain text output:
     clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
     json_data = json.loads(clean_text)
@@ -159,7 +242,7 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
         "Amount": {"type": "number", "content": json_data.get("total")},
         "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": pdf_url}},
         "Category": {"type": "multi_select", "content": ["Home 🏡"]},
-        "Sub Category": {"type": "multi_select", "content": [json_data.get("category")]},
+        "Sub Category": {"type": "multi_select", "content": [json_data.get("Category")] if json_data.get("Category") else []},
         "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
         "Type": {"type": "select", "content": "Need"},
         "Payment Method": {"type": "select", "content": "Credit"},

@@ -7,6 +7,7 @@ import mimetypes
 import requests
 from urllib.parse import urlparse
 import re
+import os
 
 
 
@@ -122,26 +123,19 @@ def fetch_pdf_bytes(url: str, *, timeout: int = 30) -> tuple[str, bytes]:
         requests.HTTPError on HTTP failures
         ValueError if content doesn't look like a PDF
     """
-    headers = {
-        "User-Agent": "Tal-PDF-Fetcher/1.0"
-    }
+    headers = {"User-Agent": "Tal-PDF-Fetcher/2.0"}
     with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
         r.raise_for_status()
-        # Quick content-type sanity check (some servers may return octet-stream)
-        ctype = r.headers.get("Content-Type", "").lower()
-        if "pdf" not in ctype and not url.lower().endswith(".pdf"):
-            # As a fallback, peek at first bytes for "%PDF"
-            peek = r.raw.read(5, decode_content=True)
-            if peek != b"%PDF-":
-                raise ValueError(f"URL doesn't appear to be a PDF (Content-Type={ctype!r}).")
-            # If it *is* a PDF, we need the remainder:
-            remainder = r.raw.read()
-            pdf_bytes = peek + remainder
-        else:
-            pdf_bytes = r.content
-
-    filename = _guess_filename_from_url(url)
-    return filename, pdf_bytes
+        chunks = []
+        for chunk in r.iter_content(chunk_size=65536):
+            if chunk:
+                chunks.append(chunk)
+        pdf_bytes = b"".join(chunks)
+    # sanity checks
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise ValueError("Downloaded content is not a PDF (missing %PDF- header).")
+    # optional: some PDFs omit %%EOF; not fatal
+    return _guess_filename_from_url(url), pdf_bytes
 
 def upload_pdf_to_openai(url: str, *, client: OpenAI | None = None, purpose: str = "assistants") -> str:
     """
@@ -157,14 +151,15 @@ def upload_pdf_to_openai(url: str, *, client: OpenAI | None = None, purpose: str
         requests.HTTPError / ValueError / openai errors
     """
     client = client or OpenAI()
-
     filename, pdf_bytes = fetch_pdf_bytes(url)
-    # Ensure mimetype
-    mime = mimetypes.guess_type(filename)[0] or "application/pdf"
 
-    # The SDK accepts file-like objects; we provide an in-memory buffer
+    # ensure a sane .pdf basename
+    base = os.path.basename(filename if filename.lower().endswith(".pdf") else filename + ".pdf")
+
     buf = io.BytesIO(pdf_bytes)
-    buf.name = filename  # helps servers infer filename
+    buf.seek(0)
+    buf.name = base  # helps servers infer filename
+
     uploaded = client.files.create(file=buf, purpose=purpose)
     return uploaded.id
 
@@ -205,3 +200,39 @@ def extract_receipt_with_openai(pdf_url: str) -> str:
     clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
     json_data = json.loads(clean_text)
     return json_data
+
+# --- OCR helpers for image-only PDFs ---
+
+def render_pdf_to_images(pdf_bytes: bytes, dpi: int = 200, max_pages: int = 2) -> list[bytes]:
+    """
+    Render the first `max_pages` pages of a PDF (provided as bytes) to PNG bytes using PyMuPDF.
+    Returns a list of PNG byte strings, one per rendered page.
+
+    Requirements:
+        pip install pymupdf
+
+    Raises:
+        ImportError: if PyMuPDF (fitz) is not installed.
+        ValueError: if the PDF cannot be opened/rendered.
+    """
+    try:
+        import fitz
+    except Exception as e:
+        raise ImportError("PyMuPDF (fitz) is required for OCR fallback. Install with: pip install pymupdf") from e
+
+    images: list[bytes] = []
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        raise ValueError("Could not open PDF bytes for rendering.") from e
+
+    zoom = dpi / 72.0  # 72 dpi is PDF default
+    mat = fitz.Matrix(zoom, zoom)
+
+    for page_index in range(min(len(doc), max_pages)):
+        page = doc.load_page(page_index)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        images.append(pix.tobytes("png"))
+
+    doc.close()
+    return images
