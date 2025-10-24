@@ -3,13 +3,58 @@ import requests
 from notion_client import Client
 import json
 import io
-import mimetypes
 import requests
 from urllib.parse import urlparse
 import re
 import os
+import smtplib
+from pathlib import Path
+from email.message import EmailMessage
+from typing import Optional
 
 
+def send_email(to: str, subject: str, body_text: Optional[str] = None, app_password: str = None):
+    """
+    Send an email via SMTP.
+
+    Args:
+        smtp_host: SMTP server hostname (e.g. 'smtp.gmail.com').
+        smtp_port: SMTP port (e.g. 587 for STARTTLS, 465 for SSL).
+        username: SMTP username (your email address usually).
+        password: SMTP password or app password.
+        to: one or more recipient emails (list or tuple or single string).
+        subject: email subject.
+        body_text: plain text body (optional).
+        body_html: HTML body (optional).
+        attachments: iterable of file paths to attach (optional).
+        use_tls: whether to use STARTTLS (True for port 587). If you use port 465, consider an SSL connection separately.
+        debug: if True, prints SMTP protocol debug info.
+
+    Raises:
+        Exception on SMTP/auth or attachment errors.
+    """
+
+    if isinstance(to, str):
+        recipients = [to]
+    else:
+        recipients = list(to)
+
+    msg = EmailMessage()
+    msg["From"] = "REDACTED_GMAIL_EMAIL"
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.set_content(body_text or "")
+    
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    try:
+        server.set_debuglevel(1)  # Set to 1 for debug output
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login("REDACTED_GMAIL_EMAIL", app_password)
+        server.send_message(msg)
+    finally:
+        server.quit()
 
 def create_notion_page(notion_client: Client, database_id: str, props: dict):
     """Create a new page in a Notion database with the given properties.
@@ -200,8 +245,6 @@ def extract_receipt_with_openai(pdf_url: str) -> str:
     clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
     json_data = json.loads(clean_text)
     return json_data
-
-# --- OCR helpers for image-only PDFs ---
 
 def render_pdf_to_images(pdf_bytes: bytes, dpi: int = 200, max_pages: int = 2) -> list[bytes]:
     """

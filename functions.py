@@ -1,8 +1,6 @@
-import xmlrpc.client as xmlrpc_client
 from base_scripts import *
 import os
 from datetime import datetime
-import io
 import re
 import json
 import base64
@@ -10,6 +8,17 @@ import base64
 notion_client = Client(auth=os.environ["NOTION_API_KEY"])
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 omdb_api_key = os.environ["OMDB_API_KEY"]
+GMAIL_SMTP_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
+def add_to_things(task_name: str, notes: str = "") -> str:
+    """Add a task to the Things app using OpenAI to generate the task details.
+    Args:
+        props (dict): A dictionary containing task properties such as 'title', 'due_date', and 'tags'.
+    Returns:
+        str: Confirmation message after adding the task.
+    """
+    send_email("REDACTED_THINGS_EMAIL", task_name, body_text=notes, app_password=GMAIL_SMTP_APP_PASSWORD)
+    return f"Task added to Things: {task_name}"
 
 def add_movie(movie_name: str, year: int = None):
     """Get movie information from OMDB and add it to the Notion database.
