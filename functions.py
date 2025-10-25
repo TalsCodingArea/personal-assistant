@@ -133,6 +133,17 @@ def get_monthly_financial_evaluation(month: str, year: int) -> str:
     }
     expenses = get_notion_pages(notion_client, os.environ["EXPENSES_DATABASE_ID"], filter=filters)
     
+def financial_advice_before_expense(amount: float, category: str) -> str:
+    """Provide financial advice before logging a new expense using OpenAI.
+    Args:
+        amount (float): The amount of the expense.
+        category (str): The category of the expense.
+    Returns:
+        str: Financial advice response from OpenAI.
+    """
+    response = ask_openai(f"I am about to log a new expense of {amount} ILS in the category '{category}'. Based on my previous expenses and financial habits, should I proceed with this expense? Provide a brief advice.")
+    return response.strip()
+
 def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
     """Upload a receipt pdf to the notion expenses database and process it using OpenAI to extract relevant information and provide an evaluation.
     Args:

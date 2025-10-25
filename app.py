@@ -11,7 +11,7 @@ from slack_sdk.errors import SlackApiError
 
 load_dotenv()
 
-def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.5b-instruct") -> str:
+def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.5b-instruct", system: Optional[str] = None) -> str:
     base = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
     payload = {
         "model": model,
@@ -21,7 +21,8 @@ def run_ollama(prompt: str, *, json_mode: bool = False, model: str = "qwen2.5:1.
     }
     if json_mode:
         payload["format"] = "json"
-
+    if system:
+        payload["system"] = system
     with httpx.Client(timeout=60.0) as client:
         # Probe the server so failures are obvious
         client.get(f"{base}/api/version").raise_for_status()
@@ -61,6 +62,23 @@ def extract_tools_and_functions(filepath):
     return TOOLS, FUNCTIONS
 
 TOOLS, FUNCTIONS = extract_tools_and_functions("functions.py")
+TASKS = {"Add a to-do item": "add_to_things", "Add a movie to watchlist database": "add_movie", "Log a watched movie and rating": "log_movie_watch_and_rating", "Give a movie suggestion": "suggest_movie", "Give a financial evaluation": "get_monthly_financial_evaluation", "Process a receipt using its URL": "receipt_url_to_notion_with_evaluation"}
+TASKS_CONTEXT = """
+The user can perform the following tasks:
+0. Add a to-do item: Adds a new item to the Things app to help the user manage their tasks.
+1. Add a movie to watchlist database: Adds a movie title to the user's watchlist database in Notion.
+2. Log a watched movie and rating: Logs a movie that the user has watched along with their rating into the Notion database.
+3. Give a movie suggestion: Suggests a movie for the user to watch based on their preferences.
+4. Give a financial evaluation: Provides a monthly financial evaluation based on the user's expenses and income.
+5. Process a receipt using its URL: Processes a receipt image from a given URL and adds the relevant information to the user's Notion database.
+If the user is sending a URL, it is most likely for the "Process a receipt using its URL" task.
+If he sends a movie name and rating, it is most likely for the "Log a watched movie and rating" task.
+If he's just sending a movie name, it is most likely for the "Add a movie to watchlist database" task.
+Asking for a movie suggestion is most likely when the user is requesting a recommendation without providing a specific title.
+Your goal is to help the user by selecting the most appropriate task from the list above.
+Given the user message, extract the main task to be performed.
+Return ONLY a JSON object with 'task' and 'index' fields, where 'task' is the task name and 'index' is its position in the list.
+"""
 
 # --- ENV ---
 BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -119,26 +137,33 @@ def run_tool_and_format(tool: str, args: Dict[str, Any]) -> str:
 
 def handle_message_via_router(text: str) -> Tuple[str, str, Dict[str, Any]]:
     try:
-        if 'receipt' in text.lower():
-            url = re.search(r'(https?://\S+)', text).group(1)[:-1]
-            decision = f"{{\"tool\":\"receipt_url_to_notion_with_evaluation\",\"args\":{{\"pdf_url\":\"{url}\"}}}}"
-        else:
-            decision = run_ollama(
-                f"{ROUTER_SYSTEM}\n"
-                f"Available tools: {json.dumps(TOOLS)}\n"
-                f"User message: {text}\n"
-                'Return ONLY JSON: "tool":"","args":{}}', json_mode=True
-            )
+        text = text.replace("<", " ").replace(">", " ")
+        task = run_ollama(
+            f"You are a task extractor. Given the user message, extract the main task to be performed.\n"
+            f"User message: {text}\n"
+            f"Tasks: {json.dumps(list(TASKS.keys()))}\n"
+            'Return ONLY a JSON object with the name of the task that best matches the user message where "task" is the task name.',
+            json_mode=True,
+            system=TASKS_CONTEXT
+        )
+        task = json.loads(task)["task"]
+        decision = run_ollama(
+            f"The user wants to perform the task: {task}\n"
+            f"This is the description for the function that will perform this task: {TOOLS[TASKS[task]]['description']}\n"
+            f"The function arguments are: {TOOLS[TASKS[task]]['args']}\n"
+            f"Based on the user's original message: {text}\n"
+            f"Return ONLY a JSON object with 'args' field, where 'args' is a dictionary of arguments to call the described function.", json_mode=True
+        )
         decision = json.loads(decision)
         greeting_message = run_ollama(
             f"{ASSISTANCE_SYSTEM}\n"
-            f"The process's docstring is: {TOOLS[decision['tool']]['description']}\n"
+            f"The process's docstring is: {TOOLS[TASKS[task]]['description']}\n"
             'Return ONLY JSON: {"response":"one-liner response"}', json_mode=True
         )
         greeting_message = json.loads(greeting_message)
     except Exception as e:
         return f"⚠️ Router call failed: {e}", "", {}
-    return greeting_message["response"], decision["tool"], decision["args"]
+    return greeting_message["response"], TASKS[task], decision["args"]
 
 # ------------ Slack handlers -------------
 @app.event("app_mention")
