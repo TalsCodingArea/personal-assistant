@@ -2,9 +2,6 @@ from base_scripts import *
 from datetime import datetime, timedelta
 
 
-notion_client = Client(auth=os.environ["NOTION_API_KEY"])
-openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-omdb_api_key = os.environ["OMDB_API_KEY"]
 GMAIL_SMTP_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
 def morning_summary():
