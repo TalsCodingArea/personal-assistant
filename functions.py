@@ -296,7 +296,7 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
         "Normalize numbers to use a period as the decimal separator. Currency is likely ILS. "
         "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; convert to YYYY-MM-DD. "
         "Return STRICT JSON ONLY with keys: "
-        "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from the options: [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+        "vendor (string|null), date (YYYY-MM-DD|null), Category (string|'Unrecognized') from [Groceries, Decor, Restaurant, Bills, EV, Online Services, Therapy], total (number|null), "
         "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
         "Do not hallucinate; if a value is missing or unreadable, use null. No extra text."
     )
@@ -368,18 +368,56 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
     # The SDK provides a convenience property for plain text output:
     clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
     json_data = json.loads(clean_text)
+    categories_map = {
+        'Groceries': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Groceries 🛒',
+            'Type': 'Need'
+        },
+        'Decor': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Decor 🪑',
+            'Type': 'Need'
+        },
+        'Restaurant': {
+            'Category': 'Lifestyle 🏞️',
+            'Sub Category': 'Restaurant 🍷',
+            'Type': 'Want'
+        },
+        'Bills': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Bills 🧾',
+            'Type': 'Need'
+        },
+        'EV': {
+            'Category': 'Car 🚗',
+            'Sub Category': 'Electric 🔋',
+            'Type': 'Need'
+        },
+        'Online Services': {
+            'Category': 'Subscriptions ♻️',
+            'Sub Category': '👨🏻‍💻 Personal Projects',
+            'Type': 'Want'
+        },
+        'Therapy': {
+            'Category': 'Subscriptions ♻️',
+            'Sub Category': 'Therapy 🧘🏻‍♂️',
+            'Type': 'Need'
+        },
+        'Unrecognized': {
+            'Category': 'Unrecognized'
+        }
+    }
     # Add to Notion
     properties = {
         "Description": {"type": "title", "content": json_data.get("vendor")},
         "Date": {"type": "date", "content": json_data.get("date")},
         "Amount": {"type": "number", "content": json_data.get("total")},
         "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": pdf_url}},
-        "Category": {"type": "multi_select", "content": ["Home 🏡"]},
-        "Sub Category": {"type": "multi_select", "content": [json_data.get("Category")] if json_data.get("Category") else []},
         "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
-        "Type": {"type": "select", "content": "Need"},
         "Payment Method": {"type": "select", "content": "Credit"},
     }
+    properties.update(categories_map.get(json_data.get("Category"), {}))
     create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
     open_ai_evaluation_and_confirmation = ask_openai(f"I have just added an expense to my Notion database with the following details: {json_data}. Provide a brief evaluation of the spending according to Israel's standards, and confirm that the expense has been logged.")
     return open_ai_evaluation_and_confirmation.strip()
@@ -445,7 +483,7 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
             "Normalize decimal separator to a period. Currency likely ILS. "
             "Convert dates to YYYY-MM-DD (handle DD/MM/YYYY, DD.MM.YYYY, Hebrew month names). "
             "Return STRICT JSON ONLY with keys: "
-            "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+            "vendor (string|null), date (YYYY-MM-DD|null), Category (string|'Unrecognized') from [Groceries, Decor, Restaurant, Bills, EV, Online Services, Therapy], total (number|null), "
             "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
             "If a value is missing or unreadable, use null. No extra text."
         )
@@ -496,18 +534,56 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
     # The SDK provides a convenience property for plain text output:
     clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
     json_data = json.loads(clean_text)
+    categories_map = {
+        'Groceries': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Groceries 🛒',
+            'Type': 'Need'
+        },
+        'Decor': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Decor 🪑',
+            'Type': 'Need'
+        },
+        'Restaurant': {
+            'Category': 'Lifestyle 🏞️',
+            'Sub Category': 'Restaurant 🍷',
+            'Type': 'Want'
+        },
+        'Bills': {
+            'Category': 'Home 🏡',
+            'Sub Category': 'Bills 🧾',
+            'Type': 'Need'
+        },
+        'EV': {
+            'Category': 'Car 🚗',
+            'Sub Category': 'Electric 🔋',
+            'Type': 'Need'
+        },
+        'Online Services': {
+            'Category': 'Subscriptions ♻️',
+            'Sub Category': '👨🏻‍💻 Personal Projects',
+            'Type': 'Want'
+        },
+        'Therapy': {
+            'Category': 'Subscriptions ♻️',
+            'Sub Category': 'Therapy 🧘🏻‍♂️',
+            'Type': 'Need'
+        },
+        'Unrecognized': {
+            'Category': 'Unrecognized'
+        }
+    }
     # Add to Notion
     properties = {
         "Description": {"type": "title", "content": json_data.get("vendor")},
         "Date": {"type": "date", "content": json_data.get("date")},
         "Amount": {"type": "number", "content": json_data.get("total")},
-        "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": pdf_url}},
-        "Category": {"type": "multi_select", "content": ["Home 🏡"]},
-        "Sub Category": {"type": "multi_select", "content": [json_data.get("Category")] if json_data.get("Category") else []},
+        "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": file_dict.get("url_private")}},
         "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
-        "Type": {"type": "select", "content": "Need"},
         "Payment Method": {"type": "select", "content": "Credit"},
     }
+    properties.update(categories_map.get(json_data.get("Category"), {}))
     create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
     open_ai_evaluation_and_confirmation = ask_openai(f"I have just added an expense to my Notion database with the following details: {json_data}. Provide a brief evaluation of the spending according to Israel's standards, and confirm that the expense has been logged.")
     return open_ai_evaluation_and_confirmation.strip()
