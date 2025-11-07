@@ -6,6 +6,8 @@ import json
 import base64
 import io
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 class SubscriptableIOWrapper:
     """

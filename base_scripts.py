@@ -382,7 +382,6 @@ def fetch_pdf_bytes_from_slack_file_dict(file_dict: dict, token) -> tuple[str, b
 
     return filename, resp.content
 
-
 def text_html_to_application_pdf_bytes(html_text: bytes, timeout: int = 30) -> tuple[str, bytes]:
     """
     Convert HTML text to PDF bytes using an external API (pdfcrowd.com).
