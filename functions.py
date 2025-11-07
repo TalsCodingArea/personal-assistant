@@ -4,6 +4,118 @@ from datetime import datetime
 import re
 import json
 import base64
+import io
+import requests
+
+class SubscriptableIOWrapper:
+    """
+    Minimal wrapper around a file-like bytes buffer that exposes read/seek/tell
+    and supports subscripting which some upload helpers expect.
+    This implementation preserves the buffer position when performing len() or slicing.
+    """
+    def __init__(self, buffer):
+        self._buffer = buffer
+
+    def read(self, *args, **kwargs):
+        return self._buffer.read(*args, **kwargs)
+
+    def seek(self, *args, **kwargs):
+        return self._buffer.seek(*args, **kwargs)
+
+    def tell(self):
+        return self._buffer.tell()
+
+    def __len__(self):
+        cur = self._buffer.tell()
+        self._buffer.seek(0, io.SEEK_END)
+        length = self._buffer.tell()
+        self._buffer.seek(cur)
+        return length
+
+    def __getitem__(self, key):
+        cur = self._buffer.tell()
+        self._buffer.seek(0)
+        data = self._buffer.read()
+        self._buffer.seek(cur)
+        return data[key]
+
+
+# === Slack/OpenAI PDF helpers ===
+def _is_pdf_bytes(data: bytes) -> bool:
+    """Quick sniff: true if bytes look like a PDF (starts with %PDF- and contains '%%EOF' somewhere)."""
+    if not isinstance(data, (bytes, bytearray)) or len(data) < 5:
+        return False
+    head_ok = bytes(data).startswith(b"%PDF-")
+    # EOF can be missing in truncated streams, so don't require it strictly
+    return head_ok
+
+def _download_slack_private_file_pdf(file_dict: dict, bot_token: str) -> tuple[str, bytes]:
+    """
+    Download a Slack private file using url_private_download/url_private with Authorization header.
+    Ensures we actually received a PDF, not an HTML login/redirect page.
+    Returns (filename, pdf_bytes).
+    Raises ValueError if not a PDF or if download fails.
+    """
+    if not isinstance(file_dict, dict):
+        raise ValueError("file_dict must be a dict.")
+
+    url = file_dict.get("url_private_download") or file_dict.get("url_private")
+    if not url:
+        raise ValueError("Slack file missing 'url_private_download'/'url_private'.")
+
+    name = file_dict.get("name") or (file_dict.get("id", "document") + ".pdf")
+    if not name.lower().endswith(".pdf"):
+        name = name + ".pdf"
+
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    resp = requests.get(url, headers=headers, timeout=60, allow_redirects=True)
+    if resp.status_code != 200:
+        raise ValueError(f"Slack download failed (HTTP {resp.status_code}).")
+
+    # Some Slack endpoints may return HTML (login/consent) if token lacks scopes or is wrong.
+    ctype = resp.headers.get("Content-Type", "").lower()
+    body = resp.content
+    if ("text/html" in ctype) or body.startswith(b"<!DOCTYPE html") or body.startswith(b"<html"):
+        raise ValueError(
+            "Received HTML instead of PDF. Check SLACK_BOT_TOKEN and scopes (needs files:read) "
+            "and ensure you're using url_private_download/url_private."
+        )
+
+    # Basic PDF sniff
+    if not _is_pdf_bytes(body):
+        raise ValueError("Downloaded bytes are not a PDF (missing %PDF- header).")
+
+    return name, body
+
+def get_openai_file_id_from_slack_file(file_dict: dict, openai_client: OpenAI, bot_token: str | None = None) -> tuple[str, str]:
+    """
+    End-to-end: given a Slack file dict, fetch the PDF bytes with auth and upload to OpenAI.
+    Returns (file_id, filename).
+    """
+    token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        raise ValueError("Missing Slack bot token. Provide bot_token or set SLACK_BOT_TOKEN.")
+
+    filename, pdf_bytes = _download_slack_private_file_pdf(file_dict, token)
+    # The OpenAI SDK accepts a (filename, bytes) tuple.
+    resp = openai_client.files.create(file=(filename, bytes(pdf_bytes)), purpose="assistants")
+    # Some SDKs return objects with .id, others dict-like; unify:
+    file_id = getattr(resp, "id", None) or getattr(resp, "file_id", None) or (resp.get("id") if isinstance(resp, dict) else None)
+    if not file_id:
+        raise RuntimeError("OpenAI files.create returned no file id.")
+    return file_id, filename
+
+def get_openai_file_id_from_pdf_bytes(pdf_bytes: bytes, openai_client: OpenAI, filename: str = "document.pdf") -> str:
+    """
+    Variant if you already have the PDF in memory. Validates that the bytes are a real PDF.
+    Returns file_id suitable for responses.create(input=[...{'type':'input_file','file_id': file_id}...])
+    """
+    if not _is_pdf_bytes(pdf_bytes):
+        raise ValueError("Provided bytes are not a PDF (start with %PDF-).")
+    if not filename.lower().endswith(".pdf"):
+        filename = filename + ".pdf"
+    resp = openai_client.files.create(file=(filename, bytes(pdf_bytes)), purpose="assistants")
+    return getattr(resp, "id", None) or getattr(resp, "file_id", None) or (resp.get("id") if isinstance(resp, dict) else None)
 
 notion_client = Client(auth=os.environ["NOTION_API_KEY"])
 openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -151,7 +263,8 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
     Returns:
         str: Confirmation message after processing the receipt along with an evaluation.
     """
-    file_id = upload_pdf_to_openai(pdf_url, client=openai_client)
+    filename, pdf_bytes = fetch_pdf_bytes(pdf_url)
+    file_id = upload_pdf_to_openai(filename, pdf_bytes, client=openai_client)
 
     # Quick readability probe (detect image-only PDFs)
     probe = openai_client.responses.create(
@@ -191,6 +304,134 @@ def receipt_url_to_notion_with_evaluation(pdf_url: str) -> str:
     if probe_text == "SCANNED_NO_TEXT":
         # OCR fallback: render first pages to PNGs and send as images
         _, pdf_bytes = fetch_pdf_bytes(pdf_url)
+        images = render_pdf_to_images(pdf_bytes, dpi=220, max_pages=2)
+
+        # Build data-URI images (avoid file-id compatibility issues)
+        image_inputs = []
+        for img_bytes in images:
+            data_uri = "data:image/png;base64," + base64.b64encode(img_bytes).decode("ascii")
+            image_inputs.append({"type": "input_image", "image_url": data_uri})
+
+        ocr_instructions = (
+            "This receipt is scanned (image-only). Perform OCR. The text may be HEBREW (RTL). "
+            "Normalize decimal separator to a period. Currency likely ILS. "
+            "Convert dates to YYYY-MM-DD (handle DD/MM/YYYY, DD.MM.YYYY, Hebrew month names). "
+            "Return STRICT JSON ONLY with keys: "
+            "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+            "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
+            "If a value is missing or unreadable, use null. No extra text."
+        )
+
+        resp = openai_client.responses.create(
+            model="gpt-4o",
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text":
+                         "You may read and extract data from documents the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this store receipt images extracted from a PDF."}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": ocr_instructions},
+                        *image_inputs,
+                    ],
+                }
+            ],
+            temperature=0.2,
+        )
+    else:
+        # Text is selectable; process the PDF directly
+        resp = openai_client.responses.create(
+            model="gpt-4o",
+            input=[
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text":
+                         "You may read and extract data from documents the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this store receipt PDF."}
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": instructions},
+                        {"type": "input_file", "file_id": file_id},
+                    ],
+                }
+            ],
+            temperature=0.2,
+        )
+
+    # The SDK provides a convenience property for plain text output:
+    clean_text = re.sub(r'^```json\s*|\s*```$', '', resp.output_text.strip())
+    json_data = json.loads(clean_text)
+    # Add to Notion
+    properties = {
+        "Description": {"type": "title", "content": json_data.get("vendor")},
+        "Date": {"type": "date", "content": json_data.get("date")},
+        "Amount": {"type": "number", "content": json_data.get("total")},
+        "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": pdf_url}},
+        "Category": {"type": "multi_select", "content": ["Home 🏡"]},
+        "Sub Category": {"type": "multi_select", "content": [json_data.get("Category")] if json_data.get("Category") else []},
+        "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
+        "Type": {"type": "select", "content": "Need"},
+        "Payment Method": {"type": "select", "content": "Credit"},
+    }
+    create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
+    open_ai_evaluation_and_confirmation = ask_openai(f"I have just added an expense to my Notion database with the following details: {json_data}. Provide a brief evaluation of the spending according to Israel's standards, and confirm that the expense has been logged.")
+    return open_ai_evaluation_and_confirmation.strip()
+
+def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
+    """
+    Upload a receipt file to the notion expenses database and process it using OpenAI to extract relevant information and provide an evaluation.
+    Args:
+        file_path (str): The path of the receipt file.
+    Returns:
+        str: Confirmation message after processing the receipt along with an evaluation.
+    """
+    # filename, pdf_bytes, mimitype = fetch_slack_pdf_bytes(file_dict, bot_token=os.environ["SLACK_BOT_TOKEN"])
+    file_id, filename = get_openai_file_id_from_slack_file(file_dict, openai_client, bot_token=os.environ.get("SLACK_BOT_TOKEN"))
+
+    # Quick readability probe (detect image-only PDFs)
+    probe = openai_client.responses.create(
+        model="gpt-4o",
+        input=[
+            {
+                "role": "system",
+                "content": [
+                    {"type": "input_text", "text":
+                     "You may read and summarize user-provided documents that the user has uploaded and owns. Avoid refusing unless content is explicitly disallowed. The user uploaded this PDF and requests a brief readability check."}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text":
+                     "Please read only page 1 of this store receipt PDF that I uploaded and own. If you can see selectable text, return the first 200 visible characters (trim whitespace). If there is no selectable text (scan/image-only), reply exactly: SCANNED_NO_TEXT."},
+                    {"type": "input_file", "file_id": file_id},
+                ],
+            }
+        ],
+        temperature=0,
+    )
+    probe_text = probe.output_text.strip()
+    print("PROBE:", probe_text)
+
+    instructions = (
+        "You extract receipt data. The receipt may be in HEBREW (RTL). Perform OCR if needed. "
+        "Normalize numbers to use a period as the decimal separator. Currency is likely ILS. "
+        "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; convert to YYYY-MM-DD. "
+        "Return STRICT JSON ONLY with keys: "
+        "vendor (string|null), date (YYYY-MM-DD|null), Category (string|null) from the options: [Groceries 🛒, Decor 🪑, Restaurant 🍷], total (number|null), "
+        "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
+        "Do not hallucinate; if a value is missing or unreadable, use null. No extra text."
+    )
+
+    if probe_text == "SCANNED_NO_TEXT":
+        filename, pdf_bytes = fetch_pdf_bytes_from_slack_file_dict(file_dict, token=os.environ.get("SLACK_BOT_TOKEN"))
         images = render_pdf_to_images(pdf_bytes, dpi=220, max_pages=2)
 
         # Build data-URI images (avoid file-id compatibility issues)

@@ -10,7 +10,8 @@ import os
 import smtplib
 from pathlib import Path
 from email.message import EmailMessage
-from typing import Optional
+from typing import Optional, Tuple
+import httpx
 
 
 def send_email(to: str, subject: str, body_text: Optional[str] = None, app_password: str = None):
@@ -178,11 +179,66 @@ def fetch_pdf_bytes(url: str, *, timeout: int = 30) -> tuple[str, bytes]:
         pdf_bytes = b"".join(chunks)
     # sanity checks
     if not pdf_bytes.startswith(b"%PDF-"):
+        
         raise ValueError("Downloaded content is not a PDF (missing %PDF- header).")
     # optional: some PDFs omit %%EOF; not fatal
     return _guess_filename_from_url(url), pdf_bytes
 
-def upload_pdf_to_openai(url: str, *, client: OpenAI | None = None, purpose: str = "assistants") -> str:
+def fetch_slack_pdf_bytes(file_obj: dict, timeout: float = 60.0, bot_token: str = "") -> Tuple[str, bytes, str]:
+    """
+    Fetch raw bytes for a Slack-hosted file (e.g., uploaded PDF).
+
+    Accepts either:
+      - a Slack `event` dict that contains `files: [...]`, or
+      - a single Slack `file` dict (as found in event["files"][i])
+
+    Returns:
+      (filename, content_bytes, mimetype)
+
+    Requires the `files:read` scope. Uses `url_private_download` and your bot token.
+    """
+
+    if not isinstance(file_obj, dict):
+        raise ValueError("fetch_slack_pdf_bytes: expected a Slack event or file dict.")
+
+    # Prefer the direct download URL; fall back to the private URL
+    url = file_obj.get("url_private_download") or file_obj.get("url_private")
+    if not url:
+        raise ValueError("fetch_slack_pdf_bytes: no url_private_download/url_private found on the file object.")
+
+    # Best-effort filename & mimetype
+    filename = file_obj.get("name") or file_obj.get("title") or "file"
+    mimetype = file_obj.get("mimetype") or "application/octet-stream"
+
+    # Download with auth
+    headers = {"Authorization": f"Bearer {bot_token}"}
+    # Some Slack file URLs redirect; follow them.
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(url, headers=headers)
+        resp.raise_for_status()
+
+        # If Slack provides a better filename via Content-Disposition, use it.
+        cd = resp.headers.get("content-disposition", "")
+        # e.g., 'attachment; filename="Invoice_0021.pdf"'
+        if "filename=" in cd:
+            try:
+                # crude but robust extraction
+                filename = cd.split("filename=", 1)[1].strip().strip('"').strip("'")
+            except Exception:
+                pass
+
+        # If Slack provides a better mimetype, prefer it
+        ct = resp.headers.get("content-type")
+        if ct:
+            mimetype = ct.split(";")[0].strip() or mimetype
+
+        if not resp.content.startswith(b"%PDF-"):
+            pdf_bytes = text_html_to_application_pdf_bytes(resp.content)
+            return filename, pdf_bytes[1], "application/pdf"
+
+        return filename, resp.content, mimetype
+
+def upload_pdf_to_openai(filename: str, pdf_bytes: bytes, client: OpenAI | None = None, purpose: str = "assistants") -> str:
     """
     Download a PDF from `url` and upload it to OpenAI Files.
     Returns the file_id you can attach to a Responses request.
@@ -196,7 +252,6 @@ def upload_pdf_to_openai(url: str, *, client: OpenAI | None = None, purpose: str
         requests.HTTPError / ValueError / openai errors
     """
     client = client or OpenAI()
-    filename, pdf_bytes = fetch_pdf_bytes(url)
 
     # ensure a sane .pdf basename
     base = os.path.basename(filename if filename.lower().endswith(".pdf") else filename + ".pdf")
@@ -279,3 +334,83 @@ def render_pdf_to_images(pdf_bytes: bytes, dpi: int = 200, max_pages: int = 2) -
 
     doc.close()
     return images
+
+def fetch_pdf_bytes_from_slack_file_dict(file_dict: dict, token) -> tuple[str, bytes]:
+    """
+    Given a Slack file dictionary (from events/files.* payloads), download the PDF bytes.
+
+    Expected keys in file_dict (Slack Web API files schema):
+      - "mimetype": should be "application/pdf" (or "filetype" == "pdf")
+      - "name": original filename (fallback to "<id>.pdf" if missing)
+      - "url_private_download" or "url_private": authenticated download URL
+
+    Args:
+        file_dict: The Slack file object received in an event or from files.info.
+        bot_token: Optional Slack Bot token. If omitted, falls back to env var SLACK_BOT_TOKEN.
+
+    Returns:
+        (filename, pdf_bytes)
+
+    Raises:
+        ValueError: if the file is not a PDF or required fields/URL are missing.
+    """
+    if not isinstance(file_dict, dict):
+        raise ValueError("file_dict must be a dict of the Slack file object.")
+
+    # Validate PDF mimetype / type
+    mimetype = file_dict.get("mimetype") or ""
+    filetype = file_dict.get("filetype") or ""
+    if not (mimetype.startswith("application/pdf") or filetype == "pdf"):
+        raise ValueError(f"Unsupported file type: {mimetype or filetype}. Please upload a PDF file.")
+
+    # Resolve filename
+    filename = file_dict.get("name")
+    if not filename:
+        fid = file_dict.get("id", "receipt")
+        filename = f"{fid}.pdf"
+
+    # Resolve authenticated URL
+    url = file_dict.get("url_private_download") or file_dict.get("url_private")
+    if not url:
+        raise ValueError("Slack file object missing 'url_private_download'/'url_private'.")
+
+
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(url, headers=headers, timeout=60)
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to download file from Slack (HTTP {resp.status_code}).")
+
+    return filename, resp.content
+
+
+def text_html_to_application_pdf_bytes(html_text: bytes, timeout: int = 30) -> tuple[str, bytes]:
+    """
+    Convert HTML text to PDF bytes using an external API (pdfcrowd.com).
+
+    Returns:
+        (filename, file_bytes)
+
+    Raises:
+        requests.HTTPError on HTTP failures
+        ValueError on conversion errors
+    """
+    json_serializable = {"html": html_text.decode("utf-8", errors="ignore")}
+    url = "https://api.pdfendpoint.com/v1/convert"
+    pdf_endpoint_token = os.getenv("PDF_ENDPOINT_ACCESS_TOKEN")
+    if not pdf_endpoint_token:
+        raise ValueError("PDF_ENDPOINT_ACCESS_TOKEN environment variable is not set.")
+    headers = {
+        "Authorization": f"Bearer {pdf_endpoint_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "input": json_serializable,
+        "output_format": "pdf"
+    }
+    with requests.post(url, headers=headers, json=payload, timeout=timeout) as r:
+        r.raise_for_status()
+        pdf_bytes = r.content
+    # sanity checks
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise ValueError("Converted content is not a PDF (missing %PDF- header).")
+    return "converted_document.pdf", pdf_bytes

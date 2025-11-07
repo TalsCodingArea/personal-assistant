@@ -1,9 +1,10 @@
-import os, re, json, sys, time, shutil, subprocess
+import os, re, json
 from typing import Dict, Any, Optional, Tuple
 import httpx
 from slack_bolt import App as SlackApp
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from base_scripts import *
+from automation_functions import *
 import importlib.util
 import inspect
 from dotenv import load_dotenv
@@ -62,6 +63,7 @@ def extract_tools_and_functions(filepath):
     return TOOLS, FUNCTIONS
 
 TOOLS, FUNCTIONS = extract_tools_and_functions("functions.py")
+AUTOMATION_FUNCTIONS = extract_tools_and_functions("automation_functions.py")[1]
 TASKS = {"Add a to-do item": "add_to_things", "Add a movie to watchlist database": "add_movie", "Log a watched movie and rating": "log_movie_watch_and_rating", "Give a movie suggestion": "suggest_movie", "Give a financial evaluation": "get_monthly_financial_evaluation", "Process a receipt using its URL": "receipt_url_to_notion_with_evaluation"}
 TASKS_CONTEXT = """
 The user can perform the following tasks:
@@ -86,6 +88,7 @@ APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://ollama:11434").rstrip("/")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "llama3.1:8b")
 TARGET_CHANNEL_ID = "C09DXFG7P70"
+AUTOMATION_CHANNEL_ID = "C09QX3M5H8U"
 
 # --- SLACK APP ---
 app = SlackApp(token=BOT_TOKEN)
@@ -165,6 +168,17 @@ def handle_message_via_router(text: str) -> Tuple[str, str, Dict[str, Any]]:
         return f"⚠️ Router call failed: {e}", "", {}
     return greeting_message["response"], TASKS[task], decision["args"]
 
+def file_share_subtype_handler(event, logger):
+    files = event.get("files", [])
+    for file in files:
+        if file.get('filetype') in ['jpg', 'png', 'pdf']:
+            return (
+                f"📄 Detected a file upload: {file.get('name')}. Processing receipt...",
+                "file_receipt_to_notion_with_evaluation",
+                {"file_dict": file}
+            )
+    return ""
+
 # ------------ Slack handlers -------------
 @app.event("app_mention")
 def on_mention(body, say, logger):
@@ -183,25 +197,42 @@ def on_message_events(body, event, client, logger, say):
     Skips non-standard message subtypes (joins, pins, edits).
     Prints the sender's name.
     """
-    # Only process plain messages in the target channel
-    if event.get("channel") != TARGET_CHANNEL_ID:
-        return
-
-    # Ignore non-message content (edits, joins, etc.)
+    channel = event.get("channel")
     subtype = event.get("subtype")
-    if subtype and subtype not in (None, "thread_broadcast"):
+    bot_id = event.get("bot_id")
+    text = event.get("text", "")
+    if channel == AUTOMATION_CHANNEL_ID:
+        if subtype not in (None, "bot_message", "thread_broadcast"):
+            return
+        try:
+            func = AUTOMATION_FUNCTIONS.get(text)
+            if func:
+                say(func(), channel=TARGET_CHANNEL_ID)
+            else:
+                say(f"⚠️ No automation function found for the command: {text}")
+        except Exception as e:
+            say(logger.error(f"[automation error] {e}"))
         return
 
-    sender = resolve_sender_name(client, event)
-    text = event.get("text", "")
+    elif channel == TARGET_CHANNEL_ID:
+        if subtype and subtype not in (None, "thread_broadcast"):
+            if subtype == "file_share" and resolve_sender_name(client, event) == "Tal Shaubi":
+                greeting_message, tool, args = file_share_subtype_handler(event, logger)
+                if tool != "":
+                    say(greeting_message)
+                    say(run_tool_and_format(tool, args))
+                return
+            return
 
-    if sender == "Tal Shaubi":
-        greeting_message, tool, args = (handle_message_via_router(text))
-        say(greeting_message)
-        if tool != "":
-            say(run_tool_and_format(tool, args))
-        else:
-            say("⚠️ No suitable tool found for this request.")
+        sender = resolve_sender_name(client, event)
+
+        if sender == "Tal Shaubi":
+            greeting_message, tool, args = (handle_message_via_router(text))
+            say(greeting_message)
+            if tool != "":
+                say(run_tool_and_format(tool, args))
+            else:
+                say("⚠️ No suitable tool found for this request.")
 
 @app.command("/help")
 def help_command(ack, say):
