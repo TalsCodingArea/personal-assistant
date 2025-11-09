@@ -50,3 +50,36 @@ def morning_summary():
 
     answer = ask_openai(prompt)
     return answer.replace("**", "*")
+
+def get_weekly_spending_summary(category: str=""):
+    """Fetches and summarizes weekly spending from a Notion database."""
+    notion_client = Client(auth=os.environ["NOTION_API_KEY"])
+    openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    last_sunday = datetime.now() - timedelta(days=datetime.now().weekday() + 1)
+    filter_dict = {
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "on_or_after": last_sunday.strftime("%Y-%m-%d")
+                }
+            }
+        ]
+    }
+    if category:
+        filter_dict["and"].append({
+            "property": "Category",
+            "select": {
+                "equals": category
+            }
+        })
+
+    expenses_data = get_notion_pages(notion_client, database_id="your_expenses_database_id", filter=filter_dict)
+    expenses_list = [(entry['properties']['Amount']['number'], entry['properties']['Category']['select']['name'], entry['properties']['Date']['date']['start']) for entry in expenses_data]
+
+    prompt = f"""Provide a summary of my spending over the last week based on the following data:
+    Expenses (Amount, Category, Date): {expenses_list}
+    """
+
+    answer = ask_openai(prompt)
+    return answer.replace("**", "*")

@@ -87,8 +87,8 @@ BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
 OLLAMA = os.environ.get("OLLAMA_HOST", "http://ollama:11434").rstrip("/")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "llama3.1:8b")
-TARGET_CHANNEL_ID = "C09DXFG7P70"
-AUTOMATION_CHANNEL_ID = "C09QX3M5H8U"
+CHAT_CHANNEL_ID = "C09DXFG7P70"
+LOGS_CHANNEL_ID = "C09QX3M5H8U"
 
 # --- SLACK APP ---
 app = SlackApp(token=BOT_TOKEN)
@@ -103,7 +103,6 @@ ASSISTANCE_SYSTEM = (
     "You are a personal assistant. The user has triggered a request for a certain process to start.\n"
     "Write a playful one-line response that explains the process that is starting according to the docstring.\n"
 )
-
 
 def resolve_sender_name(client, event):
     """
@@ -201,34 +200,32 @@ def on_message_events(body, event, client, logger, say):
     subtype = event.get("subtype")
     bot_id = event.get("bot_id")
     text = event.get("text", "")
-    if channel == AUTOMATION_CHANNEL_ID:
+    sender = resolve_sender_name(client, event)
+    if channel == LOGS_CHANNEL_ID:
         if subtype not in (None, "bot_message", "thread_broadcast"):
             return
         try:
             func = AUTOMATION_FUNCTIONS.get(text)
             if func:
-                say(func(), channel=TARGET_CHANNEL_ID)
+                say(func(), channel=CHAT_CHANNEL_ID)
             else:
                 say(f"⚠️ No automation function found for the command: {text}")
         except Exception as e:
             say(logger.error(f"[automation error] {e}"))
         return
 
-    elif channel == TARGET_CHANNEL_ID:
+    elif channel == CHAT_CHANNEL_ID:
         if subtype and subtype not in (None, "thread_broadcast"):
-            if subtype == "file_share" and resolve_sender_name(client, event) == "Tal Shaubi":
+            if subtype == "file_share" and sender == "Tal Shaubi":
                 greeting_message, tool, args = file_share_subtype_handler(event, logger)
                 if tool != "":
-                    say(greeting_message)
+                    say(greeting_message, channel=LOGS_CHANNEL_ID)
                     say(run_tool_and_format(tool, args))
                 return
             return
-
-        sender = resolve_sender_name(client, event)
-
-        if sender == "Tal Shaubi":
+        elif sender == "Tal Shaubi":
             greeting_message, tool, args = (handle_message_via_router(text))
-            say(greeting_message)
+            say(greeting_message, channel=LOGS_CHANNEL_ID)
             if tool != "":
                 say(run_tool_and_format(tool, args))
             else:
@@ -247,7 +244,7 @@ def help_command(ack, say):
 def send_startup_message(client):
     try:
         client.chat_postMessage(
-            channel=TARGET_CHANNEL_ID,
+            channel=CHAT_CHANNEL_ID,
             text="🤖 Personal Assistant Bot is now online and ready to assist you!"
         )
     except SlackApiError as e:

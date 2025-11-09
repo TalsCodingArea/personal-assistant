@@ -413,3 +413,4 @@ def text_html_to_application_pdf_bytes(html_text: bytes, timeout: int = 30) -> t
     if not pdf_bytes.startswith(b"%PDF-"):
         raise ValueError("Converted content is not a PDF (missing %PDF- header).")
     return "converted_document.pdf", pdf_bytes
+
