@@ -89,6 +89,7 @@ OLLAMA = os.environ.get("OLLAMA_HOST", "http://ollama:11434").rstrip("/")
 ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "llama3.1:8b")
 CHAT_CHANNEL_ID = "C09DXFG7P70"
 LOGS_CHANNEL_ID = "C09QX3M5H8U"
+EXPENSE_CHANNEL = "C0A491EC83B"
 
 # --- SLACK APP ---
 app = SlackApp(token=BOT_TOKEN)
@@ -201,6 +202,8 @@ def on_message_events(body, event, client, logger, say):
     bot_id = event.get("bot_id")
     text = event.get("text", "")
     sender = resolve_sender_name(client, event)
+    if channel == EXPENSE_CHANNEL:
+        say(evaluate_expense(text))
     if channel == LOGS_CHANNEL_ID:
         if subtype not in (None, "bot_message", "thread_broadcast"):
             return

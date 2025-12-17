@@ -5,6 +5,8 @@ import os
 load_dotenv()
 
 GMAIL_SMTP_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+notion_client = Client(auth=os.environ["NOTION_API_KEY"])
+openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 def morning_summary():
     month_ago_date = datetime.now() - timedelta(days=90)
@@ -52,6 +54,7 @@ def morning_summary():
     return answer.replace("**", "*")
 
 def get_weekly_spending_summary(category: str=""):
+
     """Fetches and summarizes weekly spending from a Notion database."""
     notion_client = Client(auth=os.environ["NOTION_API_KEY"])
     openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
@@ -83,3 +86,118 @@ def get_weekly_spending_summary(category: str=""):
 
     answer = ask_openai(prompt)
     return answer.replace("**", "*")
+
+def evaluate_expense(last_expense: str):
+    """Logs a new expense into the Notion database."""
+    current_month_expenses = get_notion_pages(notion_client, database_id=os.environ["EXPENSES_DATABASE_ID"], filter={
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "on_or_after": datetime.now().replace(day=1).strftime("%Y-%m-%d")
+                }
+            },
+            {
+                "property": "Tag",
+                "multi_select": {
+                    "contains": "Tal 👨🏻"
+                }
+            }
+        ]
+    })
+    exclude_props = ["Yearly Finance Vacation 🏖️", "Yearly Finance Lifestyle 🏞️", "Yearly Finance Car 🚗",
+                     "Invoice", "Academic Yearly Finance", "Budget", "Yearly Finance Spendings 📦",
+                     "Yearly Finance Subscription ♻️", "Payment Method", "Shiri Budget", "Financial Analytics",
+                     "Yearly Finance Home 🏡", "Tag"]
+    clean_current_month_expenses = notion_response_simplifier(current_month_expenses, exclude=exclude_props)
+    for entry in clean_current_month_expenses:
+        if entry.get('Actual') and entry['Actual']:
+            entry["Amount"] = entry["Amount"] * entry["Actual"]
+    current_month_income = get_notion_pages(notion_client, database_id=os.environ["INCOME_DATABASE_ID"], filter={
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "on_or_after": datetime.now().replace(day=1).strftime("%Y-%m-%d")
+                }
+            }
+        ]
+    })
+    clean_current_month_income = notion_response_simplifier(current_month_income, exclude=exclude_props)
+    total_income = sum(entry['Amount'] for entry in clean_current_month_income)
+    bills_and_rent_past_data = get_notion_pages(notion_client, database_id=os.environ["EXPENSES_DATABASE_ID"], filter={
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "before": datetime.now().replace(day=1).strftime("%Y-%m-%d")
+                }
+            },
+            {
+                "or": [
+                    {
+                        "property": "Sub Category",
+                        "multi_select": {
+                            "contains": "Bills 🧾"
+                        }
+                    },
+                    {
+                        "property": "Sub Category",
+                        "multi_select": {
+                            "contains": "Rent 💰"
+                        }
+                    }
+                ]
+            }
+        ]
+    })
+    clean_bills_and_rent = notion_response_simplifier(bills_and_rent_past_data, exclude=exclude_props)
+    expenses_goal = f"""
+    I'm located in Israel so my currency is in ILS.
+    My goal is to keep my "Need" type expenses under {total_income * 0.5} and my "Want" type expenses under {total_income * 0.3} each month.
+    Bills & Rent this month should be predictable with the data from previous months.
+    This is the 
+    Based on the expenses so far this month: {clean_current_month_expenses}, provide me with a brief summary of how I'm doing towards my goals.
+    This is the bills and rent data from previous months to help you understand my typical fixed costs: {clean_bills_and_rent}
+    Your response should be concise and to the point. Make it with emojis and symbols so it will be engaging and easy to understand. No more than 3 sentences.
+    This action is triggered when I log a new expense. So take into account that I've just logged an expense for {last_expense}.
+    Example responses: 
+    1. "❌ Your expense puts you over the line for this month's prediction! You've spent X ILS on 'Want' already
+    Continuing this pace will result in a total monthly spending of Z ILS on 'Want'
+    Your main expenses is on the Category Y. Consider cutting back there to stay within budget."
+
+    2. "✅ Great job! You're within your budget for this month. You've spent X ILS on 'Need' so far.
+    Continuing this pace will result in a total monthly spending of Z ILS on 'Need'.
+    Keep an eye on Category Y, as it's where most of your expenses are concentrated."
+    """
+    system_message = f"You are a personal finance assistant helping me track my expenses and stay within my budget."
+    answer = ask_openai(expenses_goal, system_message=system_message)
+
+    return answer.replace("**", "*")
+properties = {
+    "Description": {
+        "type": "title",
+        "content": "Coffee"
+    },
+    "Amount": {
+        "type": "number",
+        "content": 3.5
+    },
+    "Category": {
+        "type": "multi_select",
+        "content": ["Food & Drink"]
+    },
+    "Sub Category":{
+        "type": "multi_select",
+        "content": ["Bills 🧾"]
+    },
+    "Date": {
+        "type": "date",
+        "content": datetime.now().strftime("%Y-%m-%d")
+    },
+    "Tag": {
+        "type": "multi_select",
+        "content": ["Tal 👨🏻"]
+    }
+}
+# print(log_expense(properties))
