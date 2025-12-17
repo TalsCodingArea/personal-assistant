@@ -161,14 +161,27 @@ def evaluate_expense(last_expense: str):
     This is the bills and rent data from previous months to help you understand my typical fixed costs: {clean_bills_and_rent}
     Your response should be concise and to the point. Make it with emojis and symbols so it will be engaging and easy to understand. No more than 3 sentences.
     This action is triggered when I log a new expense. So take into account that I've just logged an expense for {last_expense}.
-    Example responses: 
-    1. "❌ Your expense puts you over the line for this month's prediction! You've spent X ILS on 'Want' already
-    Continuing this pace will result in a total monthly spending of Z ILS on 'Want'
-    Your main expenses is on the Category Y. Consider cutting back there to stay within budget."
+    Locate if this new expense is "Want" or "Need" and reflect on that type of expense in your answer.
+    Example responses (tailor them to the current situation): 
+    Withing budget:
+    "🟢 'Need' X / Y
+    📈 At this pace: ~Z this month on "Needs"
+    ✅ Looking good - spending is controlled, just keep an eye on Food & Drink ☕"
 
-    2. "✅ Great job! You're within your budget for this month. You've spent X ILS on 'Need' so far.
-    Continuing this pace will result in a total monthly spending of Z ILS on 'Need'.
-    Keep an eye on Category Y, as it's where most of your expenses are concentrated."
+    Close to limit:
+    "⚠️ Wants are getting tight — you’re at 85% of budget and we're only half way through the month. and relatively high spending in Category X.
+    Food & Drink is the main driver. Consider slowing down this week 🍽️"
+
+    Predictable breach:
+    "🚨 At the current pace, Needs will hit 5,000 ILS this month
+    — mainly due to consistent high spending in Category X.
+    Consider adjusting your spending habits to stay within budget 📉"
+
+    Over budget:
+    "❌ This pushes Wants over budget.
+    Current pace leads to 2,300 ILS this month — Food & Drink is the main leak 🚨"
+
+    Stick to the examples structure but change it to be more engagins,  make it relevant to my current spending.
     """
     system_message = f"You are a personal finance assistant helping me track my expenses and stay within my budget."
     answer = ask_openai(expenses_goal, system_message=system_message)
