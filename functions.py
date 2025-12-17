@@ -7,6 +7,7 @@ import base64
 import io
 import requests
 from dotenv import load_dotenv
+from automation_functions import evaluate_expense
 load_dotenv()
 
 class SubscriptableIOWrapper:
@@ -719,5 +720,4 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
     }
     properties.update(categories_map.get(json_data.get("Category"), {}))
     resp = create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
-    open_ai_evaluation_and_confirmation = ask_openai(f"I have just added an expense to my Notion database with the following details: {json_data}. Provide a brief evaluation of the spending according to Israel's standards, and confirm that the expense has been logged.")
-    return open_ai_evaluation_and_confirmation.strip()
+    return evaluate_expense(f"{json_data.get("vendor")} for {json_data.get("total")} ILS on {json_data.get("date")}")

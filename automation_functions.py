@@ -113,7 +113,7 @@ def evaluate_expense(last_expense: str):
     for entry in clean_current_month_expenses:
         if entry.get('Actual') and entry['Actual']:
             entry["Amount"] = entry["Amount"] * entry["Actual"]
-    current_month_income = get_notion_pages(notion_client, database_id=os.environ["INCOME_DATABASE_ID"], filter={
+    current_month_income = get_notion_pages(notion_client, database_id="REDACTED_NOTION_DB_ID", filter={
         "and": [
             {
                 "property": "Date",
