@@ -203,7 +203,7 @@ def on_message_events(body, event, client, logger, say):
     text = event.get("text", "")
     sender = resolve_sender_name(client, event)
     if channel == EXPENSE_CHANNEL:
-        say(evaluate_expense(text))
+        say(evaluate_expense(text), channel=CHAT_CHANNEL_ID)
     if channel == LOGS_CHANNEL_ID:
         if subtype not in (None, "bot_message", "thread_broadcast"):
             return
