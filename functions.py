@@ -502,6 +502,8 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
     # filename, pdf_bytes, mimitype = fetch_slack_pdf_bytes(file_dict, bot_token=os.environ["SLACK_BOT_TOKEN"])
     file_id, filename = get_openai_file_id_from_slack_file(file_dict, openai_client, bot_token=os.environ.get("SLACK_BOT_TOKEN"))
 
+    file_upload_json = create_notion_file_upload()
+
     # Quick readability probe (detect image-only PDFs)
     probe = openai_client.responses.create(
         model="gpt-4o",
@@ -714,10 +716,14 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
         "Description": {"type": "title", "content": json_data.get("vendor")},
         "Date": {"type": "date", "content": json_data.get("date")},
         "Amount": {"type": "number", "content": json_data.get("total")},
-        "Invoice": {"type": "file", "content": {"name": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf", "url": file_dict.get("url_private")}},
         "Tag": {"type": "multi_select", "content": ["Tal 👨🏻"]},
         "Payment Method": {"type": "select", "content": "Credit"},
     }
+    r = upload_file_bytes(file_upload_json['id'], pdf_bytes, f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf")
+    file = {
+        "file_upload_id": file_upload_json['id'],
+        "filename": f"Receipt_{json_data.get('vendor')}_{json_data.get('date')}.pdf"
+    }
     properties.update(categories_map.get(json_data.get("Category"), {}))
-    resp = create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties)
+    resp = create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties, file)
     return evaluate_expense(f"{json_data.get("vendor")} for {json_data.get("total")} ILS on {json_data.get("date")}")

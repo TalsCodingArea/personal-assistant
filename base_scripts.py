@@ -57,7 +57,7 @@ def send_email(to: str, subject: str, body_text: Optional[str] = None, app_passw
     finally:
         server.quit()
 
-def create_notion_page(notion_client: Client, database_id: str, props: dict):
+def create_notion_page(notion_client: Client, database_id: str, props: dict, file: dict=None):
     """Create a new page in a Notion database with the given properties.
      Args:
         notion_client (Client): An instance of the Notion client.
@@ -108,6 +108,29 @@ def create_notion_page(notion_client: Client, database_id: str, props: dict):
         parent={"database_id": database_id},
         properties=props
     )
+    if file:
+        headers = {
+            "Authorization": f"Bearer {os.environ['NOTION_API_KEY']}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "properties": {
+                "Invoice": {
+                    "type": "files",
+                    "files": [
+                        {
+                            "type": "file_upload",
+                            "file_upload": { "id": file["file_upload_id"]},
+                            "name": file['filename']
+                        }
+                    ]
+                }
+            }
+        }
+
+        r = requests.patch(f"https://api.notion.com/v1/pages/{page["id"]}", headers=headers, json=payload)
+        r.raise_for_status()
     return page
 
 def get_notion_pages(notion_client: Client, database_id: str, filter: dict = None, sorts: list = []):
@@ -453,3 +476,42 @@ def notion_response_simplifier(entries: list, exclude: list = []) -> str:
                 simplified_entry[prop_name] = file_urls
         simplified.append(simplified_entry)
     return simplified
+
+def download_slack_file(url_private_download: str) -> bytes:
+    r = requests.get(
+        url_private_download,
+        headers={"Authorization": f"Bearer {os.environ["SLACK_BOT_TOKEN"]}"},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.content
+
+def create_notion_file_upload():
+    r = requests.post(
+        "https://api.notion.com/v1/file_uploads",
+        headers={
+            "Authorization": f"Bearer {os.environ['NOTION_API_KEY']}",
+            "Notion-Version": "2025-09-03",
+            "Content-Type": "application/json",
+        },
+        json={"mode": "single_part"},
+        timeout=60,
+    )
+    r.raise_for_status()
+    return r.json()  # contains "id"
+
+def upload_file_bytes(file_upload_id, pdf_bytes, filename = "receipt.pdf"):
+    headers = {
+        "Authorization": f"Bearer {os.environ['NOTION_API_KEY']}",
+        "Notion-Version": "2022-06-28"
+    }
+    files = {
+        "file": (
+            filename,
+            pdf_bytes,
+            "application/pdf"
+        )
+    }
+    response = requests.post(f"https://api.notion.com/v1/file_uploads/{file_upload_id}/send", headers=headers, files=files)
+    response.raise_for_status()
+    return response.json()
