@@ -532,15 +532,15 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
     instructions = (
         "You extract receipt data. The receipt may be in HEBREW (RTL). Perform OCR if needed. "
         "Normalize numbers to use a period as the decimal separator. Currency is likely ILS. "
-        "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; convert to YYYY-MM-DD. "
+        "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; You can evaluate the correct date because it is suppose to be in the last month; convert to YYYY-MM-DD."
         "Return STRICT JSON ONLY with keys: "
         "vendor (string|null), date (YYYY-MM-DD|null), Category (string|'Unrecognized') from [Groceries, Decor, Restaurant, Bills, EV, Online Services, Therapy], total (number|null), "
         "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
         "Do not hallucinate; if a value is missing or unreadable, use null. No extra text."
     )
 
+    filename, pdf_bytes = fetch_pdf_bytes_from_slack_file_dict(file_dict, token=os.environ.get("SLACK_BOT_TOKEN"))
     if probe_text == "SCANNED_NO_TEXT":
-        filename, pdf_bytes = fetch_pdf_bytes_from_slack_file_dict(file_dict, token=os.environ.get("SLACK_BOT_TOKEN"))
         images = render_pdf_to_images(pdf_bytes, dpi=220, max_pages=2)
 
         # Build data-URI images (avoid file-id compatibility issues)
@@ -552,7 +552,7 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
         ocr_instructions = (
             "This receipt is scanned (image-only). Perform OCR. The text may be HEBREW (RTL). "
             "Normalize decimal separator to a period. Currency likely ILS. "
-            "Convert dates to YYYY-MM-DD (handle DD/MM/YYYY, DD.MM.YYYY, Hebrew month names). "
+            "Dates may appear as DD/MM/YYYY, DD.MM.YYYY, or with Hebrew month names; You can evaluate the correct date becuase it is suppose to in the last month; convert to YYYY-MM-DD."
             "Return STRICT JSON ONLY with keys: "
             "vendor (string|null), date (YYYY-MM-DD|null), Category (string|'Unrecognized') from [Groceries, Decor, Restaurant, Bills, EV, Online Services, Therapy], total (number|null), "
             "items (array of objects: name (string), qty (number|null), unit_price (number|null), line_total (number|null)). "
