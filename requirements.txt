@@ -3,7 +3,7 @@ slack_sdk==3.36.0
 requests
 orjson==3.10.7
 notion-client==2.3.0
-openai==1.82.1
+openai
 python-dotenv==1.1.1
 ollama
 pymupdf==1.26.5
