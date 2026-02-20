@@ -1,12 +1,11 @@
 slack-bolt==1.24.0
 slack_sdk==3.36.0
 requests
-httpx==0.25.2
 orjson==3.10.7
 notion-client==2.3.0
 openai==1.82.1
 python-dotenv==1.1.1
-ollama==0.1.4
+ollama
 pymupdf==1.26.5
 langchain==1.2.10
 telegram==0.0.1
