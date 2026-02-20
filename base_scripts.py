@@ -515,3 +515,4 @@ def upload_file_bytes(file_upload_id, pdf_bytes, filename = "receipt.pdf"):
     response = requests.post(f"https://api.notion.com/v1/file_uploads/{file_upload_id}/send", headers=headers, files=files)
     response.raise_for_status()
     return response.json()
+

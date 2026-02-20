@@ -727,3 +727,5 @@ def file_receipt_to_notion_with_evaluation(file_dict: dict) -> str:
     properties.update(categories_map.get(json_data.get("Category"), {}))
     resp = create_notion_page(notion_client, os.environ["EXPENSES_DATABASE_ID"], properties, file)
     return evaluate_expense(f"{json_data.get("vendor")} for {json_data.get("total")} ILS on {json_data.get("date")}")
+
+get_monthly_financial_evaluation("January", 2024)

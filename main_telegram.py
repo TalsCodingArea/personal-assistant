@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.prebuilt import create_react_agent
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
@@ -14,7 +16,10 @@ from tools.notion_tools import (
     notion_create_database_page,
     notion_create_file_upload,
     notion_get_database_pages,
-    attach_file_to_notion_file_upload
+    attach_file_to_notion_file_upload,
+    get_expenses_between_dates,
+    get_movies_data_from_notion_database,
+    update_movie_property
 )
 from tools.receipt_tools import (
     receipt_detect_pdf_content_type,
@@ -63,46 +68,33 @@ NOTION_AMOUNT_PROPERTY = os.getenv("NOTION_RECEIPT_AMOUNT_PROPERTY", "Amount")
 NOTION_CATEGORY_PROPERTY = os.getenv("NOTION_RECEIPT_CATEGORY_PROPERTY", "Category")
 
 TOOLS = [
-    notion_create_database_page,
-    notion_create_file_upload,
-    notion_get_database_pages,
-    receipt_detect_pdf_content_type,
-    receipt_extract_summary_from_pdf,
-    receipt_extract_summary_from_pdf_url,
+    get_expenses_between_dates,
+    get_movies_data_from_notion_database,
+    update_movie_property,
 ]
 
 SYSTEM_PROMPT = (
     "You are Tal's personal assistant. Use tools when needed. "
-    "Be concise, practical, and deterministic."
+    "Be concise, practical, and deterministic. "
+    "All expenses are documented in NIS (₪)."
 )
 
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("Missing OPENAI_API_KEY environment variable.")
-OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY)
 
-
-def _build_openai_tool_spec(tool_obj: Any) -> Dict[str, Any]:
-    args_schema = tool_obj.args if isinstance(tool_obj.args, dict) else {}
-    required = [name for name, schema in args_schema.items() if "default" not in schema]
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_obj.name,
-            "description": tool_obj.description or "",
-            "parameters": {
-                "type": "object",
-                "properties": args_schema,
-                "required": required,
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-TOOL_REGISTRY = {tool_obj.name: tool_obj for tool_obj in TOOLS}
-OPENAI_TOOL_SPECS = [_build_openai_tool_spec(tool_obj) for tool_obj in TOOLS]
+PERSONAL_ASSISTANT_MODEL = init_chat_model(
+    model=MODEL_NAME,
+    model_provider="openai",
+    temperature=0,
+    api_key=OPENAI_API_KEY,
+)
+PERSONAL_ASSISTANT_AGENT = create_react_agent(
+    model=PERSONAL_ASSISTANT_MODEL,
+    tools=TOOLS,
+    prompt=SYSTEM_PROMPT,
+)
 
 
 def _chat_role(chat_id: int) -> Optional[str]:
@@ -141,75 +133,33 @@ def _save_memory(messages: List[Dict[str, str]]) -> None:
     MEMORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _invoke_tool(tool_name: str, args_json: str) -> str:
-    tool_obj = TOOL_REGISTRY.get(tool_name)
-    if not tool_obj:
-        return f"Tool not found: {tool_name}"
-
-    try:
-        args = json.loads(args_json) if args_json else {}
-    except Exception:
-        return f"Invalid tool arguments JSON for tool {tool_name}: {args_json}"
-
-    try:
-        result = tool_obj.invoke(args)
-    except Exception as exc:
-        return f"Tool {tool_name} failed: {exc}"
-
-    if isinstance(result, str):
-        return result
-    return json.dumps(result, ensure_ascii=False)
-
-
 def _assistant_reply_with_tools(user_text: str, memory_items: List[Dict[str, str]]) -> str:
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: List[Any] = [SystemMessage(content=SYSTEM_PROMPT)]
     for item in memory_items[-MEMORY_MAX_MESSAGES:]:
-        messages.append({"role": item["role"], "content": item["content"]})
-    messages.append({"role": "user", "content": user_text})
+        if item["role"] == "user":
+            messages.append(HumanMessage(content=item["content"]))
+        elif item["role"] == "assistant":
+            messages.append(AIMessage(content=item["content"]))
+    messages.append(HumanMessage(content=user_text))
 
-    for _ in range(6):
-        response = OPENAI_CLIENT.chat.completions.create(
-            model=MODEL_NAME,
-            temperature=0,
-            messages=messages,
-            tools=OPENAI_TOOL_SPECS,
-            tool_choice="auto",
-        )
-        message = response.choices[0].message
-        tool_calls = message.tool_calls or []
-
-        if not tool_calls:
-            return (message.content or "").strip() or "Done."
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
-                    for tool_call in tool_calls
-                ],
-            }
-        )
-
-        for tool_call in tool_calls:
-            tool_result = _invoke_tool(tool_call.function.name, tool_call.function.arguments)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result,
-                }
-            )
-
-    return "I couldn't complete the request after multiple tool steps."
+    response = PERSONAL_ASSISTANT_AGENT.invoke({"messages": messages})
+    response_messages = response.get("messages", [])
+    for msg in reversed(response_messages):
+        if isinstance(msg, AIMessage):
+            content = msg.content
+            if isinstance(content, str):
+                text = content.strip()
+                if text:
+                    return text
+            if isinstance(content, list):
+                text_parts: List[str] = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+                        text_parts.append(part["text"])
+                text = "\n".join(text_parts).strip()
+                if text:
+                    return text
+    return "Done."
 
 
 async def _safe_log(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:

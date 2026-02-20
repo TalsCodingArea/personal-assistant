@@ -1,6 +1,9 @@
 import os
 from typing import Any, Dict, List, Optional
 from pathlib import Path
+from datetime import datetime, timedelta
+import calendar
+import re
 import requests
 from langchain_core.tools import tool
 from notion_client import Client
@@ -22,6 +25,33 @@ def _build_notion_client() -> Client:
 
 def _is_non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
+
+
+def _parse_iso_date_with_clamp(raw_date: str, field_name: str) -> datetime.date:
+    """
+    Parse YYYY-MM-DD and clamp out-of-range day values to the month's last valid day.
+    Example: 2026-02-29 -> 2026-02-28
+    """
+    if not _is_non_empty_string(raw_date):
+        raise ValueError(f"`{field_name}` must be a non-empty ISO date string (YYYY-MM-DD).")
+
+    text = raw_date.strip()
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        match = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+        if not match:
+            raise ValueError(f"`{field_name}` must be an ISO date string (YYYY-MM-DD).")
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        if month < 1 or month > 12:
+            raise ValueError(f"`{field_name}` has invalid month: {month}.")
+        if day < 1:
+            day = 1
+        last_day = calendar.monthrange(year, month)[1]
+        day = min(day, last_day)
+        return datetime(year, month, day).date()
 
 
 def _format_rich_text(content: Any) -> List[Dict[str, Any]]:
@@ -334,33 +364,86 @@ def attach_file_to_notion_file_upload(file_upload_id: str, file_path: str, file_
 
 @tool
 def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]:
-    """Fetches expenses from a Notion database between two dates."""
+    """
+    Fetches expenses from a Notion database between two dates.
+    Use this tool to retrieve expense records for a given date range.
+    Args:
+        start_date: The start date in ISO format (YYYY-MM-DD).
+        end_date: The end date in ISO format (YYYY-MM-DD).
+    Returns:     A dictionary containing the raw Notion API response with expenses data.
+    """
+    start_dt = _parse_iso_date_with_clamp(start_date, "start_date")
+    end_dt = _parse_iso_date_with_clamp(end_date, "end_date")
+
+    if end_dt < start_dt:
+        raise ValueError("`end_date` must be on or after `start_date`.")
+
+    # Inclusive date-range for day-level queries:
+    # Date >= start_date and Date < (end_date + 1 day)
     filter_dict = {
         "and": [
             {
                 "property": "Date",
                 "date": {
-                    "on_or_after": start_date,
-                    "on_or_before": end_date
+                    "on_or_after": start_dt.isoformat(),
+                }
+            },
+            {
+                "property": "Date",
+                "date": {
+                    "before": (end_dt + timedelta(days=1)).isoformat(),
                 }
             }
         ]
     }
-    expenses_data = notion_get_database_pages(database_id=os.getenv("EXPENSES_DATABASE_ID"), filter=filter_dict)
-    expenses_list = [(entry['properties']['Amount']['number'], entry['properties']['Category']['select']['name'], entry['properties']['Sub Category']['select']['name'], entry['properties']['Date']['date']['start'], entry['properties']['Description']['rich_text'][0]['text']['content']) for entry in expenses_data['results']]
-
+    expenses_database_id = os.getenv("EXPENSES_DATABASE_ID")
+    if not _is_non_empty_string(expenses_database_id):
+        raise ValueError("Missing EXPENSES_DATABASE_ID environment variable.")
+    expenses_data = notion_get_database_pages.invoke(
+        {"database_id": expenses_database_id, "filter": filter_dict}
+    )
     return expenses_data
-    """
-    Expenses (Amount, Category, Sub Category, Date, Description): {expenses_list}
-    """
 
+
+@tool
+def get_movies_data_from_notion_database() -> Dict[str, Any]:
+    """
+    Fetches movie data from a Notion database.
+    Use this tool to retrieve movie records for a given date range.
+    Returns:     A dictionary containing the raw Notion API response with movies data.
+    """
+    movies_database_id = os.getenv("MOVIES_DATABASE_ID")
+    if not _is_non_empty_string(movies_database_id):
+        raise ValueError("Missing MOVIES_DATABASE_ID environment variable.")
+    movies_data = notion_get_database_pages.invoke({"database_id": movies_database_id})
+
+    return movies_data
+
+
+@tool
+def update_movie_property(movie_page_id: str, properties: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Update properties of a movie page in Notion.
+    Use this tool to update movie records with new information.
+    Args:
+        movie_page_id: The ID of the Notion page representing the movie.
+        properties: A dictionary of properties to update.
+    Returns:     A dictionary containing the raw Notion API response with the updated page data.
+    """
+    notion_client = _build_notion_client()
+
+    try:
+        updated_page = notion_client.pages.update(page_id=movie_page_id, properties=properties)
+    except APIResponseError as exc:
+        raise RuntimeError(f"Failed to update Notion page: {exc}") from exc
+
+    return updated_page
 
 @tool
 def notion_get_database_pages(
     database_id: str,
     filter: Optional[Dict[str, Any]] = None,
     sorts: Optional[List[Dict[str, Any]]] = None,
-    page_size: int = 100,
     max_results: int = 200,
 ) -> Dict[str, Any]:
     """
@@ -388,8 +471,6 @@ def notion_get_database_pages(
     """
     if not _is_non_empty_string(database_id):
         raise ValueError("`database_id` must be a non-empty string.")
-    if not isinstance(page_size, int) or not (1 <= page_size <= 100):
-        raise ValueError("`page_size` must be an integer in the range 1..100.")
     if not isinstance(max_results, int) or max_results < 1:
         raise ValueError("`max_results` must be a positive integer.")
     if filter is not None and not isinstance(filter, dict):
@@ -398,7 +479,7 @@ def notion_get_database_pages(
         raise ValueError("`sorts` must be a list when provided.")
 
     notion_client = _build_notion_client()
-    query: Dict[str, Any] = {"page_size": page_size}
+    query: Dict[str, Any] = {}
     if filter:
         query["filter"] = filter
     if sorts:
@@ -411,7 +492,7 @@ def notion_get_database_pages(
         while len(results) < max_results:
             if start_cursor:
                 query["start_cursor"] = start_cursor
-            response = notion_client.databases.query(database_id=database_id, **query)
+            response = notion_client.databases.query(database_id=database_id, **{k: v for k, v in query.items() if v is not None})
             batch = response.get("results", [])
             results.extend(batch)
 
