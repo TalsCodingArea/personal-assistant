@@ -270,6 +270,9 @@ def _notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str
         elif category.strip() == "EV":
             properties["Category"] = {"type": "multi_select", "content": ["Car 🚗"]}
             properties["Sub Category"] = {"type": "multi_select", "content": ["Electric 🔋"]}
+        elif category.strip() == "Bills":
+            properties["Category"] = {"type": "multi_select", "content": ["Home 🏡"]}
+            properties["Sub Category"] = {"type": "multi_select", "content": ["Bills 🧾"]}
     if isinstance(date, str):
         properties["Date"] = {"type": "date", "content": {"start": date}}
     properties["Tag"] = {"type": "multi_select", "content": ["Tal 👨🏻"]}

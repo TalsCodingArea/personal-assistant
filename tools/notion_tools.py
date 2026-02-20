@@ -5,6 +5,8 @@ import requests
 from langchain_core.tools import tool
 from notion_client import Client
 from notion_client.errors import APIResponseError
+import dotenv
+dotenv.load_dotenv()
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2025-09-03"
@@ -328,6 +330,29 @@ def attach_file_to_notion_file_upload(file_upload_id: str, file_path: str, file_
         response.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(f"Failed to send file bytes to Notion: {exc}") from exc
+
+
+@tool
+def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]:
+    """Fetches expenses from a Notion database between two dates."""
+    filter_dict = {
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "on_or_after": start_date,
+                    "on_or_before": end_date
+                }
+            }
+        ]
+    }
+    expenses_data = notion_get_database_pages(database_id=os.getenv("EXPENSES_DATABASE_ID"), filter=filter_dict)
+    expenses_list = [(entry['properties']['Amount']['number'], entry['properties']['Category']['select']['name'], entry['properties']['Sub Category']['select']['name'], entry['properties']['Date']['date']['start'], entry['properties']['Description']['rich_text'][0]['text']['content']) for entry in expenses_data['results']]
+
+    return expenses_data
+    """
+    Expenses (Amount, Category, Sub Category, Date, Description): {expenses_list}
+    """
 
 
 @tool
