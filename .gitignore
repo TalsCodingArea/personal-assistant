@@ -1,4 +1,8 @@
 .env
+.env.*
+.venv/
+.DS_Store
+data/personal_assistant_memory.json
 
 # All cache files
 __pycache__/
