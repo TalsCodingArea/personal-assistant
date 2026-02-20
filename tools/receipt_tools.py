@@ -155,6 +155,7 @@ def _build_receipt_prompt(category_options: List[str]) -> str:
         "Choose the best-fitting category based on vendor/items/context. "
         "If data is unreadable, set unknown fields to null and use category='Unrecognized'. "
         "Use a decimal point for numeric values."
+        "Ensure you're returning the total amount after TAX. Lines that has: 'לפני מע״מ' are usually before TAX, and lines that has 'כולל מע״מ' are usually after TAX. Search for 'סה״כ לתשלום', 'לתשלום'"
     )
 
 
