@@ -10,3 +10,4 @@ pymupdf==1.26.5
 langchain==1.2.10
 telegram==0.0.1
 python-telegram-bot==22.6
+langchain-openai

@@ -1,10 +1,11 @@
+import calendar
 import json
 import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -77,6 +78,11 @@ SYSTEM_PROMPT = (
     "You are Tal's personal assistant. Use tools when needed. "
     "Be concise, practical, and deterministic. "
     "All expenses are documented in NIS (₪)."
+    "If you don't know something, say you don't know instead of making it up."
+    "The way Tal manages his expenses is that he has categories for every expense, such as Home 🏡, Car 🚗, Food 🍔, etc. Each category can have subcategories, such as Home 🏡 > Groceries 🛒 or Car 🚗 > EV 🔋. "
+    "The Bills 🧾 subcategory is for regular monthly bills like rent, utilities, internet, etc. so it is predictable from previous months (total amount and date of charge). Consider that when giving a monthly summary."
+    "All expenses have a Typ of Want, Need or Waste. When Need are expenses that are necessary and unavoidable, such as rent, bills, groceries, etc. When Want are expenses that are not strictly necessary but add value to life, such as going out to eat, entertainment, etc. When Waste are expenses that couldn't been avoided like uncanceled subscriptions."
+    "A monthly evaluation should be short with colorful details indicating good, avrage or bad, reflect if the Need expenses are predicted to be higher than 50 percent of the income and if so, which sub categories are the main contributors. It should also reflect on the Waste expenses and if there are any predicted for the month based on previous months, and if so, which ones. Finally, it should reflect on the Want expenses and if there are any predicted for the month based on previous months, and if so, which ones."
 )
 
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -87,7 +93,7 @@ if not OPENAI_API_KEY:
 PERSONAL_ASSISTANT_MODEL = init_chat_model(
     model=MODEL_NAME,
     model_provider="openai",
-    temperature=0,
+    temperature=0.5,
     api_key=OPENAI_API_KEY,
 )
 PERSONAL_ASSISTANT_AGENT = create_react_agent(
@@ -134,7 +140,15 @@ def _save_memory(messages: List[Dict[str, str]]) -> None:
 
 
 def _assistant_reply_with_tools(user_text: str, memory_items: List[Dict[str, str]]) -> str:
-    messages: List[Any] = [SystemMessage(content=SYSTEM_PROMPT)]
+    now = datetime.now().astimezone()
+    month_start = now.replace(day=1).date().isoformat()
+    month_end = now.replace(day=calendar.monthrange(now.year, now.month)[1]).date().isoformat()
+    date_context = (
+        f"Current date context: today is {now.date().isoformat()} "
+        f"({now.strftime('%A')}), current month is {now.strftime('%B %Y')} "
+        f"from {month_start} to {month_end}, timezone is {now.tzname() or 'local time'}."
+    )
+    messages: List[Any] = [SystemMessage(content=SYSTEM_PROMPT), SystemMessage(content=date_context)]
     for item in memory_items[-MEMORY_MAX_MESSAGES:]:
         if item["role"] == "user":
             messages.append(HumanMessage(content=item["content"]))
