@@ -273,7 +273,7 @@ def _notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str
     if isinstance(date, str):
         properties["Date"] = {"type": "date", "content": {"start": date}}
     properties["Tag"] = {"type": "multi_select", "content": ["Tal 👨🏻"]}
-    properties["Type"] = {"type": "select", "content": ["Need"]}
+    properties["Type"] = {"type": "select", "content": "Need"}
     properties["Payment Method"] = {"type": "select", "content": "Credit"}
     return properties
 
