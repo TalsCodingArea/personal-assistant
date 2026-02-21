@@ -9,10 +9,126 @@ from langchain_core.tools import tool
 from notion_client import Client
 from notion_client.errors import APIResponseError
 import dotenv
+from notion_config.loader import NotionConfigLoader
+from services.notion_service import NotionService
+
 dotenv.load_dotenv()
+_loader = NotionConfigLoader()
+_notion = NotionService()
+
+
+@tool
+def notion_query(database: str, query_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Query a Notion database by logical name.
+
+    database: logical database name ("expenses" or "income")
+    query_kwargs: kwargs passed to notion_client.databases.query, e.g.
+      {
+        "page_size": 5,
+        "sorts": [{"property": "Date", "direction": "descending"}],
+        "filter": {...}
+      }
+
+    Returns: raw Notion API response JSON.
+    """
+    cfg = _loader.get_database_config(database)
+    return _notion.query_database(cfg["database_id"], query_kwargs)
+
+
+@tool
+def notion_create_page(database: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create a page in a Notion database by logical name.
+
+    database: logical database name ("expenses" or "income")
+    properties: Notion 'properties' object (formatted per Notion API)
+
+    Returns: raw Notion API response JSON.
+    """
+    cfg = _loader.get_database_config(database)
+    return _notion.create_page(cfg["database_id"], properties)
+
+
+@tool
+def get_finance_rules() -> Dict[str, Any]:
+    """Return finance allocation rules from local config."""
+    return _loader.get_finance_rules()
+
+
+@tool
+def get_database_schema(database: str) -> Dict[str, Any]:
+    """Return the properties schema for a logical database name."""
+    cfg = _loader.get_database_config(database)
+    return cfg["properties"]
+
+
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2025-09-03"
+
+
+def _extract_notion_property_content(property_data: Dict[str, Any]) -> Any:
+    """Extract the content value from a Notion property based on its type."""
+    if "title" in property_data:
+        return "".join([part["text"]["content"] for part in property_data["title"]])
+    elif "rich_text" in property_data:
+        return "".join([part["text"]["content"] for part in property_data["rich_text"]])
+    elif "select" in property_data:
+        return property_data["select"]["name"] if property_data["select"] else None
+    elif "multi_select" in property_data:
+        return [item["name"] for item in property_data["multi_select"]]
+    elif "number" in property_data:
+        return property_data["number"]
+    elif "checkbox" in property_data:
+        return property_data["checkbox"]
+    elif "date" in property_data:
+        date_info = property_data["date"]
+        if date_info is None:
+            return None
+        start = date_info.get("start")
+        end = date_info.get("end")
+        if end:
+            return {"start": start, "end": end}
+        return start
+    elif "url" in property_data:
+        return property_data["url"]
+    elif "email" in property_data:
+        return property_data["email"]
+    elif "phone_number" in property_data:
+        return property_data["phone_number"]
+    elif "files" in property_data:
+        return [file.get("name") for file in property_data["files"]]
+    elif "formula" in property_data:
+        formula = property_data["formula"]
+        if formula["type"] == "string":
+            return formula.get("string")
+        elif formula["type"] == "number":
+            return formula.get("number")
+        elif formula["type"] == "boolean":
+            return formula.get("boolean")
+        elif formula["type"] == "date":
+            date_info = formula.get("date")
+            if date_info is None:
+                return None
+            start = date_info.get("start")
+            end = date_info.get("end")
+            if end:
+                return {"start": start, "end": end}
+            return start
+    else:
+        return None
+
+def _raw_notion_response_to_dict(propeties_names: List[str], response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Convert Notion API response to a list of simplified dicts with only specified properties."""
+    results = []
+    for page in response.get("results", []):
+        page_data = {"id": page.get("id"), "url": page.get("url")}
+        props = page.get("properties", {})
+        for prop_name in propeties_names:
+            page_data[prop_name] = _extract_notion_property_content(props.get(prop_name, {}))
+        results.append(page_data)
+    return results
 
 
 def _build_notion_client() -> Client:
@@ -393,6 +509,12 @@ def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]
                 "date": {
                     "before": (end_dt + timedelta(days=1)).isoformat(),
                 }
+            },
+            {
+                "property": "Tag",
+                "multi_select": {
+                    "contains": "Tal 👨🏻"
+                }
             }
         ]
     }
@@ -402,8 +524,91 @@ def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]
     expenses_data = notion_get_database_pages.invoke(
         {"database_id": expenses_database_id, "filter": filter_dict}
     )
+    expenses_data = _raw_notion_response_to_dict(["Description", "Final", "Category", "Sub Category", "Date"], expenses_data)
+    for expense in expenses_data:
+        expense["Amount"] = expense.get("Final", 0)
+        expense.pop("Final", None)
     return expenses_data
 
+
+
+@tool
+def get_income_between_dates(start_date: str, end_date: str) -> Dict[str, Any]:
+    """
+    Fetches income from a Notion database between two dates.
+    Use this tool to retrieve income records for a given date range.
+    Args:
+        start_date: The start date in ISO format (YYYY-MM-DD).
+        end_date: The end date in ISO format (YYYY-MM-DD).
+    Returns:     A dictionary containing the raw Notion API response with income data.
+    """
+    start_dt = _parse_iso_date_with_clamp(start_date, "start_date")
+    end_dt = _parse_iso_date_with_clamp(end_date, "end_date")
+
+    if end_dt < start_dt:
+        raise ValueError("`end_date` must be on or after `start_date`.")
+
+    # Inclusive date-range for day-level queries:
+    # Date >= start_date and Date < (end_date + 1 day)
+    filter_dict = {
+        "and": [
+            {
+                "property": "Date",
+                "date": {
+                    "on_or_after": start_dt.isoformat(),
+                }
+            },
+            {
+                "property": "Date",
+                "date": {
+                    "before": (end_dt + timedelta(days=1)).isoformat(),
+                }
+            }
+        ]
+    }
+    expenses_database_id = os.getenv("INCOME_DATABASE_ID")
+    if not _is_non_empty_string(expenses_database_id):
+        raise ValueError("Missing INCOME_DATABASE_ID environment variable.")
+    expenses_data = notion_get_database_pages.invoke(
+        {"database_id": expenses_database_id, "filter": filter_dict}
+    )
+    expenses_data = _raw_notion_response_to_dict(["Description", "Amount", "Category", "Sub Category", "Date"], expenses_data)
+    return expenses_data
+
+
+
+@tool
+def get_last_expenses(n: int = 5) -> Dict[str, Any]:
+    """
+    Fetches the last n expenses from a Notion database.
+    Use this tool to retrieve the most recent expense records.
+    Args:
+        n: The number of recent expenses to fetch (default is 5).
+    Returns:     A dictionary containing the raw Notion API response with expenses data.
+    """
+    if not isinstance(n, int) or n < 1:
+        raise ValueError("`n` must be a positive integer.")
+    expenses_database_id = os.getenv("EXPENSES_DATABASE_ID")
+    if not _is_non_empty_string(expenses_database_id):
+        raise ValueError("Missing EXPENSES_DATABASE_ID environment variable.")
+    expenses_data = notion_get_database_pages.invoke(
+        {
+            "database_id": expenses_database_id,
+            "sorts": [{"property": "Date", "direction": "descending"}],
+            "max_results": n,
+            "filter": {
+                "property": "Tag",
+                "multi_select": {
+                    "contains": "Tal 👨🏻"
+                }
+            }
+        }
+    )
+    expenses_data = _raw_notion_response_to_dict(["Description", "Final", "Category", "Sub Category", "Date"], expenses_data)
+    for expense in expenses_data:
+        expense["Amount"] = expense.get("Final", 0)
+        expense.pop("Final", None)
+    return expenses_data
 
 @tool
 def get_movies_data_from_notion_database() -> Dict[str, Any]:
@@ -416,7 +621,7 @@ def get_movies_data_from_notion_database() -> Dict[str, Any]:
     if not _is_non_empty_string(movies_database_id):
         raise ValueError("Missing MOVIES_DATABASE_ID environment variable.")
     movies_data = notion_get_database_pages.invoke({"database_id": movies_database_id})
-
+    movies_data = _raw_notion_response_to_dict(["Title", "Genre", "Rating", "Mood", "Last Watched"], movies_data)
     return movies_data
 
 

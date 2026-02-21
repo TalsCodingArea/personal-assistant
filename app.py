@@ -6,7 +6,6 @@ import calendar
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -14,6 +13,11 @@ from langgraph.prebuilt import create_react_agent
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
+import asyncio
+from agent.llm import get_llm
+from agent.memory import MemoryStore
+from agent.builder import build_agent
+from router.intent_router import classify_intent
 from tools.notion_tools import (
     notion_create_database_page,
     notion_create_file_upload,
@@ -30,6 +34,8 @@ from tools.receipt_tools import (
 )
 
 load_dotenv()
+llm = get_llm()
+memory = MemoryStore()
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -42,8 +48,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable.")
 
-# Fill these IDs in your .env (or directly here if preferred).
-# Telegram IDs are often numeric and can be negative for groups/supergroups.
 CHAT_IDS: Dict[str, str] = {
     "receipts": os.getenv("TELEGRAM_CHAT_ID_RECEIPTS", ""),
     "personal_assistant": os.getenv("TELEGRAM_CHAT_ID_PERSONAL_ASSISTANT", ""),
@@ -63,53 +67,9 @@ RECEIPT_CATEGORY_OPTIONS = [
     if item.strip()
 ]
 
-AUTO_LOG_RECEIPTS_TO_NOTION = os.getenv("AUTO_LOG_RECEIPTS_TO_NOTION", "true").lower() == "true"
-NOTION_RECEIPTS_DATABASE_ID = os.getenv("EXPENSES_DATABASE_ID", "")
 NOTION_VENDOR_PROPERTY = os.getenv("NOTION_RECEIPT_VENDOR_PROPERTY", "Description")
 NOTION_AMOUNT_PROPERTY = os.getenv("NOTION_RECEIPT_AMOUNT_PROPERTY", "Amount")
 NOTION_CATEGORY_PROPERTY = os.getenv("NOTION_RECEIPT_CATEGORY_PROPERTY", "Category")
-
-TOOLS = [
-    get_expenses_between_dates,
-    get_movies_data_from_notion_database,
-    update_movie_property,
-]
-
-SYSTEM_PROMPT = (
-    "You are Tal's personal assistant. Use tools when needed. "
-    "Be concise, practical, and deterministic. "
-    "All expenses are documented in NIS (₪)."
-    "If you don't know something, say you don't know instead of making it up."
-    "The way Tal manages his expenses is that he has categories for every expense, such as Home 🏡, Car 🚗, Food 🍔, etc. Each category can have subcategories, such as Home 🏡 > Groceries 🛒 or Car 🚗 > EV 🔋. "
-    "The Bills 🧾 subcategory is for regular monthly bills like rent, utilities, internet, etc. so it is predictable from previous months (total amount and date of charge). Consider that when giving a monthly summary."
-    "All expenses have a Typ of Want, Need or Waste. When Need are expenses that are necessary and unavoidable, such as rent, bills, groceries, etc. When Want are expenses that are not strictly necessary but add value to life, such as going out to eat, entertainment, etc. When Waste are expenses that couldn't been avoided like uncanceled subscriptions."
-    "A monthly evaluation should be short with colorful details indicating good, avrage or bad, reflect if the Need expenses are predicted to be higher than 50 percent of the income and if so, which sub categories are the main contributors. It should also reflect on the Waste expenses and if there are any predicted for the month based on previous months, and if so, which ones. Finally, it should reflect on the Want expenses and if there are any predicted for the month based on previous months, and if so, which ones."
-)
-
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise ValueError("Missing OPENAI_API_KEY environment variable.")
-
-PERSONAL_ASSISTANT_MODEL = init_chat_model(
-    model=MODEL_NAME,
-    model_provider="openai",
-    temperature=0.5,
-    api_key=OPENAI_API_KEY,
-)
-PERSONAL_ASSISTANT_AGENT = create_react_agent(
-    model=PERSONAL_ASSISTANT_MODEL,
-    tools=TOOLS,
-    prompt=SYSTEM_PROMPT,
-)
-
-
-def _chat_role(chat_id: int) -> Optional[str]:
-    cid = str(chat_id)
-    for role, configured_id in CHAT_IDS.items():
-        if configured_id and cid == configured_id:
-            return role
-    return None
 
 
 def _load_memory() -> List[Dict[str, str]]:
@@ -140,42 +100,6 @@ def _save_memory(messages: List[Dict[str, str]]) -> None:
     MEMORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _assistant_reply_with_tools(user_text: str, memory_items: List[Dict[str, str]]) -> str:
-    now = datetime.now().astimezone()
-    month_start = now.replace(day=1).date().isoformat()
-    month_end = now.replace(day=calendar.monthrange(now.year, now.month)[1]).date().isoformat()
-    date_context = (
-        f"Current date context: today is {now.date().isoformat()} "
-        f"({now.strftime('%A')}), current month is {now.strftime('%B %Y')} "
-        f"from {month_start} to {month_end}, timezone is {now.tzname() or 'local time'}."
-    )
-    messages: List[Any] = [SystemMessage(content=SYSTEM_PROMPT), SystemMessage(content=date_context)]
-    for item in memory_items[-MEMORY_MAX_MESSAGES:]:
-        if item["role"] == "user":
-            messages.append(HumanMessage(content=item["content"]))
-        elif item["role"] == "assistant":
-            messages.append(AIMessage(content=item["content"]))
-    messages.append(HumanMessage(content=user_text))
-
-    response = PERSONAL_ASSISTANT_AGENT.invoke({"messages": messages})
-    response_messages = response.get("messages", [])
-    for msg in reversed(response_messages):
-        if isinstance(msg, AIMessage):
-            content = msg.content
-            if isinstance(content, str):
-                text = content.strip()
-                if text:
-                    return text
-            if isinstance(content, list):
-                text_parts: List[str] = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
-                        text_parts.append(part["text"])
-                text = "\n".join(text_parts).strip()
-                if text:
-                    return text
-    return "Done."
-
 
 async def _safe_log(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     logs_chat = CHAT_IDS.get("logs")
@@ -195,24 +119,14 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
     if not user_text:
         return
 
-    memory = _load_memory()
-
-    try:
-        reply_text = _assistant_reply_with_tools(user_text, memory)
-    except Exception as exc:
-        logger.exception("Assistant agent execution failed")
-        await message.reply_text("I hit an error while processing your request.")
-        await _safe_log(context, f"[personal_assistant:error] {exc}")
-        return
-
-    await message.reply_text(reply_text)
-    memory.extend(
-        [
-            {"role": "user", "content": user_text},
-            {"role": "assistant", "content": reply_text},
-        ]
-    )
-    _save_memory(memory)
+    intent = await classify_intent(llm, message.text)
+    agent = build_agent(llm, memory, intent)
+    out = await agent.ainvoke({"input": message.text}, config={"configurable": {"session_id": str(message.chat_id)}})
+    response = out.get("output", "")
+    if response:
+        await message.reply_text(response)
+    else:
+        await message.reply_text("Sorry, I couldn't generate a response for that.")
 
 
 def _notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str, Dict[str, object]]:
@@ -284,15 +198,15 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
         pdf_type = receipt_data.get("source_pdf_type")
 
         summary = (
-            "Receipt processed.\n"
-            f"Vendor: {vendor}\n"
-            f"Total: {total}\n"
-            f"Category: {category}\n"
-            f"PDF Type: {pdf_type}"
+            "✅ Receipt processed.\n"
+            f"*Vendor*: {vendor}\n"
+            f"*Total*: {total}\n"
+            f"*Category*: {category}\n"
+            f"*PDF Type*: {pdf_type}"
         )
         await message.reply_text(summary)
 
-        if AUTO_LOG_RECEIPTS_TO_NOTION and NOTION_RECEIPTS_DATABASE_ID:
+        if os.getenv("EXPENSES_DATABASE_ID", ""):
             notion_properties = _notion_properties_from_receipt(receipt_data)
             file_upload = notion_create_file_upload.invoke(
                 {
@@ -313,7 +227,7 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
             if notion_properties:
                 create_res = notion_create_database_page.invoke(
                     {
-                        "database_id": NOTION_RECEIPTS_DATABASE_ID,
+                        "database_id": os.getenv("EXPENSES_DATABASE_ID", ""),
                         "properties": notion_properties,
                         "file_property_name": "Invoice",
                         "file_upload_id": file_upload["file_upload_id"],
@@ -341,23 +255,21 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     message = update.message
     if not message:
         if update.channel_post:
-            role = _chat_role(update.channel_post.chat_id)
-            if role == "logs":
+            if update.channel_post.chat_id == CHAT_IDS.get("logs"):
                 await update.channel_post.reply_text("Logs chat is active.")
                 return
 
-            if role == "receipts":
+            if update.channel_post.chat_id == CHAT_IDS.get("receipts"):
                 await update.channel_post.reply_text("Send a PDF file here to process receipts.")
                 return
 
-            if role == "automations":
+            if update.channel_post.chat_id == CHAT_IDS.get("automations"):
                 await update.channel_post.reply_text("Automations chat is active.")
                 return
 
             logger.info("Ignoring text from unregistered chat id: %s", update.channel_post.chat_id)
         return
-    role = _chat_role(message.chat_id)
-    if role == "personal_assistant":
+    if message.chat_id == int(CHAT_IDS.get("personal_assistant", 0)):
         await _handle_personal_assistant_text(update, context)
         return
 
@@ -369,8 +281,7 @@ async def route_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         message = update.channel_post
     if not message or not message.document:
         return
-    role = _chat_role(message.chat_id)
-    if role == "receipts":
+    if message.chat_id == CHAT_IDS.get("receipts"):
         await _handle_receipt_pdf(update, context)
         return
 
