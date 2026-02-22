@@ -22,6 +22,7 @@ from tools.notion_tools import (
 from tools.receipt_tools import (
     receipt_extract_summary_from_pdf,
 )
+from tools.telegram_tools import markdown_v2_safe
 
 load_dotenv()
 llm = get_llm()
@@ -77,7 +78,7 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
     out = await agent.ainvoke({"input": message.text}, config={"configurable": {"session_id": str(message.chat_id)}})
     response = out.get("output", "")
     if response:
-        await message.reply_text(response)
+        await message.reply_text(response, parse_mode="MarkdownV2")
     else:
         await message.reply_text("Sorry, I couldn't generate a response for that.")
 
@@ -114,19 +115,19 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
         if not isinstance(receipt_data, dict):
             raise ValueError("Receipt extraction returned an unexpected result type.")
 
-        vendor = receipt_data.get("vendor")
-        total = receipt_data.get("total_amount")
-        category = receipt_data.get("category")
-        pdf_type = receipt_data.get("source_pdf_type")
+        vendor = markdown_v2_safe(receipt_data.get("vendor"))
+        total = markdown_v2_safe(receipt_data.get("total_amount"))
+        category = markdown_v2_safe(receipt_data.get("category"))
+        pdf_type = markdown_v2_safe(receipt_data.get("source_pdf_type"))
 
         summary = (
-            "✅ Receipt processed.\n"
+            "✅ Receipt processed\.\n"
             f"*Vendor*: {vendor}\n"
             f"*Total*: {total}\n"
             f"*Category*: {category}\n"
             f"*PDF Type*: {pdf_type}"
         )
-        await message.reply_text(summary)
+        await message.reply_text(summary, parse_mode="MarkdownV2")
 
         if os.getenv("EXPENSES_DATABASE_ID", ""):
             notion_properties = notion_properties_from_receipt(receipt_data)
