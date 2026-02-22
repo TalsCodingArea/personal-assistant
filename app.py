@@ -130,7 +130,7 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if os.getenv("EXPENSES_DATABASE_ID", ""):
             notion_properties = notion_properties_from_receipt(receipt_data)
-            file_upload = notion_create_file_upload.invoke(
+            file_upload = notion_create_file_upload(
                 {
                     "file_path": str(tmp_path),
                     "file_name": f"{vendor or 'Receipt'} - {notion_properties.get('Date', {}).get('content', {}).get('start', 'Unknown Date')}.pdf",
@@ -139,7 +139,7 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not isinstance(file_upload, dict) or "file_upload_id" not in file_upload or not file_upload["ok"]:
                 await _safe_log(context, f"[receipt:notion] Failed to upload file to Notion: {file_upload}")
                 return
-            attach_file_to_notion_file_upload.invoke(
+            attach_file_to_notion_file_upload(
                 {
                     "file_upload_id": file_upload["file_upload_id"],
                     "file_path": str(tmp_path),
