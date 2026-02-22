@@ -2,17 +2,12 @@ import json
 import logging
 import os
 import tempfile
-import calendar
 from pathlib import Path
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
-from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
-
 import asyncio
 from agent.llm import get_llm
 from agent.memory import MemoryStore
@@ -21,16 +16,11 @@ from router.intent_router import classify_intent
 from tools.notion_tools import (
     notion_create_database_page,
     notion_create_file_upload,
-    notion_get_database_pages,
     attach_file_to_notion_file_upload,
-    get_expenses_between_dates,
-    get_movies_data_from_notion_database,
-    update_movie_property
+    notion_properties_from_receipt
 )
 from tools.receipt_tools import (
-    receipt_detect_pdf_content_type,
     receipt_extract_summary_from_pdf,
-    receipt_extract_summary_from_pdf_url,
 )
 
 load_dotenv()
@@ -54,10 +44,6 @@ CHAT_IDS: Dict[str, str] = {
     "logs": os.getenv("TELEGRAM_CHAT_ID_LOGS", ""),
     "automations": os.getenv("TELEGRAM_CHAT_ID_AUTOMATIONS", ""),
 }
-
-MEMORY_FILE = Path(os.getenv("PERSONAL_ASSISTANT_MEMORY_FILE", "data/personal_assistant_memory.json"))
-MEMORY_MAX_MESSAGES = int(os.getenv("PERSONAL_ASSISTANT_MEMORY_MAX_MESSAGES", "40"))
-
 RECEIPT_CATEGORY_OPTIONS = [
     item.strip()
     for item in os.getenv(
@@ -66,39 +52,6 @@ RECEIPT_CATEGORY_OPTIONS = [
     ).split(",")
     if item.strip()
 ]
-
-NOTION_VENDOR_PROPERTY = os.getenv("NOTION_RECEIPT_VENDOR_PROPERTY", "Description")
-NOTION_AMOUNT_PROPERTY = os.getenv("NOTION_RECEIPT_AMOUNT_PROPERTY", "Amount")
-NOTION_CATEGORY_PROPERTY = os.getenv("NOTION_RECEIPT_CATEGORY_PROPERTY", "Category")
-
-
-def _load_memory() -> List[Dict[str, str]]:
-    if not MEMORY_FILE.exists():
-        return []
-    try:
-        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        messages = data.get("messages", [])
-        if not isinstance(messages, list):
-            return []
-        clean: List[Dict[str, str]] = []
-        for item in messages:
-            if (
-                isinstance(item, dict)
-                and item.get("role") in ("user", "assistant")
-                and isinstance(item.get("content"), str)
-            ):
-                clean.append({"role": item["role"], "content": item["content"]})
-        return clean[-MEMORY_MAX_MESSAGES:]
-    except Exception as exc:
-        logger.warning("Failed to load memory file: %s", exc)
-        return []
-
-
-def _save_memory(messages: List[Dict[str, str]]) -> None:
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"messages": messages[-MEMORY_MAX_MESSAGES:]}
-    MEMORY_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
 
 
 async def _safe_log(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -127,37 +80,6 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
         await message.reply_text(response)
     else:
         await message.reply_text("Sorry, I couldn't generate a response for that.")
-
-
-def _notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str, Dict[str, object]]:
-    vendor = receipt_json.get("vendor")
-    total_amount = receipt_json.get("total_amount")
-    category = receipt_json.get("category")
-    date = receipt_json.get("date")
-    properties: Dict[str, Dict[str, object]] = {}
-
-    if isinstance(vendor, str) and vendor.strip():
-        properties[NOTION_VENDOR_PROPERTY] = {"type": "title", "content": vendor.strip()}
-    if isinstance(total_amount, (int, float)):
-        properties[NOTION_AMOUNT_PROPERTY] = {"type": "number", "content": float(total_amount)}
-    if isinstance(category, str) and category.strip():
-        if category.strip() == "Uncategorized":
-            properties["Category"] = {"type": "multi_select", "content": ["Uncategorized"]}
-        elif category.strip() == "Groceries":
-            properties["Category"] = {"type": "multi_select", "content": ["Home 🏡"]}
-            properties["Sub Category"] = {"type": "multi_select", "content": ["Groceries 🛒"]}
-        elif category.strip() == "EV":
-            properties["Category"] = {"type": "multi_select", "content": ["Car 🚗"]}
-            properties["Sub Category"] = {"type": "multi_select", "content": ["Electric 🔋"]}
-        elif category.strip() == "Bills":
-            properties["Category"] = {"type": "multi_select", "content": ["Home 🏡"]}
-            properties["Sub Category"] = {"type": "multi_select", "content": ["Bills 🧾"]}
-    if isinstance(date, str):
-        properties["Date"] = {"type": "date", "content": {"start": date}}
-    properties["Tag"] = {"type": "multi_select", "content": ["Tal 👨🏻"]}
-    properties["Type"] = {"type": "select", "content": "Need"}
-    properties["Payment Method"] = {"type": "select", "content": "Credit"}
-    return properties
 
 
 async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -207,7 +129,7 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text(summary)
 
         if os.getenv("EXPENSES_DATABASE_ID", ""):
-            notion_properties = _notion_properties_from_receipt(receipt_data)
+            notion_properties = notion_properties_from_receipt(receipt_data)
             file_upload = notion_create_file_upload.invoke(
                 {
                     "file_path": str(tmp_path),
@@ -274,7 +196,6 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
 
-
 async def route_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
     if "channel_post" in update._get_attrs():
@@ -285,6 +206,7 @@ async def route_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _handle_receipt_pdf(update, context)
         return
 
+    await _safe_log(context, f"Received document from unregistered chat id: {message.chat_id}")
     await message.reply_text("Document uploads are only handled in the receipts chat.")
 
 

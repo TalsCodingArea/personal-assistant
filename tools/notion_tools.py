@@ -371,7 +371,6 @@ def notion_create_database_page(
     }
 
 
-@tool
 def notion_create_file_upload(mode: str = "single_part") -> Dict[str, Any]:
     """
     Create a Notion file-upload object and return its upload ID.
@@ -431,7 +430,6 @@ def notion_create_file_upload(mode: str = "single_part") -> Dict[str, Any]:
     }
 
 
-@tool
 def attach_file_to_notion_file_upload(file_upload_id: str, file_path: str, file_name: str = None) -> Dict[str, Any]:
     """
     Send file bytes to Notion's file upload endpoint to complete the upload process.
@@ -476,6 +474,37 @@ def attach_file_to_notion_file_upload(file_upload_id: str, file_path: str, file_
         response.raise_for_status()
     except requests.RequestException as exc:
         raise RuntimeError(f"Failed to send file bytes to Notion: {exc}") from exc
+
+
+def notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+    vendor = receipt_json.get("vendor")
+    total_amount = receipt_json.get("total_amount")
+    category = receipt_json.get("category")
+    date = receipt_json.get("date")
+    properties: Dict[str, Dict[str, object]] = {}
+
+    if isinstance(vendor, str) and vendor.strip():
+        properties["Description"] = {"type": "title", "content": vendor.strip()}
+    if isinstance(total_amount, (int, float)):
+        properties["Amount"] = {"type": "number", "content": float(total_amount)}
+    if isinstance(category, str) and category.strip():
+        if category.strip() == "Uncategorized":
+            properties["Category"] = {"type": "multi_select", "content": ["Uncategorized"]}
+        elif category.strip() == "Groceries":
+            properties["Category"] = {"type": "multi_select", "content": ["Home 🏡"]}
+            properties["Sub Category"] = {"type": "multi_select", "content": ["Groceries 🛒"]}
+        elif category.strip() == "EV":
+            properties["Category"] = {"type": "multi_select", "content": ["Car 🚗"]}
+            properties["Sub Category"] = {"type": "multi_select", "content": ["Electric 🔋"]}
+        elif category.strip() == "Bills":
+            properties["Category"] = {"type": "multi_select", "content": ["Home 🏡"]}
+            properties["Sub Category"] = {"type": "multi_select", "content": ["Bills 🧾"]}
+    if isinstance(date, str):
+        properties["Date"] = {"type": "date", "content": {"start": date}}
+    properties["Tag"] = {"type": "multi_select", "content": ["Tal 👨🏻"]}
+    properties["Type"] = {"type": "select", "content": "Need"}
+    properties["Payment Method"] = {"type": "select", "content": "Credit"}
+    return properties
 
 
 @tool
@@ -643,6 +672,8 @@ def update_movie_property(movie_page_id: str, properties: Dict[str, Dict[str, An
         raise RuntimeError(f"Failed to update Notion page: {exc}") from exc
 
     return updated_page
+
+
 
 @tool
 def notion_get_database_pages(
