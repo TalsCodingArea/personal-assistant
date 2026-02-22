@@ -78,7 +78,7 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
     out = await agent.ainvoke({"input": message.text}, config={"configurable": {"session_id": str(message.chat_id)}})
     response = out.get("output", "")
     if response:
-        await message.reply_text(response, parse_mode="MarkdownV2")
+        await message.reply_text(markdown_v2_safe(response, preserve_formatting=True), parse_mode="MarkdownV2")
     else:
         await message.reply_text("Sorry, I couldn't generate a response for that.")
 
@@ -121,7 +121,7 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
         pdf_type = markdown_v2_safe(receipt_data.get("source_pdf_type"))
 
         summary = (
-            "✅ Receipt processed\.\n"
+            "✅ Receipt processed\\.\n"
             f"*Vendor*: {vendor}\n"
             f"*Total*: {total}\n"
             f"*Category*: {category}\n"

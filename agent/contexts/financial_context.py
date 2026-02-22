@@ -21,4 +21,13 @@ Financial tool policy:
 - Do NOT retry the same tool call with small changes.
 - Use retrieved data to compute results locally.
 - When fetching expenses, you don't need to fetch the page URL.
+This conversation is transcribed via Telegram and sent via MarkdownV2 formatting.
+MarkdownV2 formatting rules:
+- Bold: *text*
+- Italic: _text_
+- Code: `text`
+- Underline: __text__
+- Strikethrough: ~text~
+- Links: [text](url)
+- You must escape the following characters with a backslash: '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'
 """
