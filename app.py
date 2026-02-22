@@ -135,11 +135,9 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await _safe_log(context, f"[receipt:notion] Failed to upload file to Notion: {file_upload}")
                 return
             attach_file_to_notion_file_upload(
-                {
-                    "file_upload_id": file_upload["file_upload_id"],
-                    "file_path": str(tmp_path),
-                    "file_name": f"{vendor or 'Receipt'} - {notion_properties.get('Date', {}).get('content', {}).get('start', 'Unknown Date')}.pdf",
-                }
+                    file_upload["file_upload_id"],
+                    file_path=str(tmp_path),
+                    file_name=f"{vendor or 'Receipt'} - {notion_properties.get('Date', {}).get('content', {}).get('start', 'Unknown Date')}.pdf",
             )
             if notion_properties:
                 create_res = notion_create_database_page.invoke(
