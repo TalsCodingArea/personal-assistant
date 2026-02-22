@@ -177,15 +177,15 @@ async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     message = update.message
     if not message:
         if update.channel_post:
-            if update.channel_post.chat_id == CHAT_IDS.get("logs"):
+            if str(update.channel_post.chat_id) == CHAT_IDS.get("logs"):
                 await update.channel_post.reply_text("Logs chat is active.")
                 return
 
-            if update.channel_post.chat_id == CHAT_IDS.get("receipts"):
+            if str(update.channel_post.chat_id) == CHAT_IDS.get("receipts"):
                 await update.channel_post.reply_text("Send a PDF file here to process receipts.")
                 return
 
-            if update.channel_post.chat_id == CHAT_IDS.get("automations"):
+            if str(update.channel_post.chat_id) == CHAT_IDS.get("automations"):
                 await update.channel_post.reply_text("Automations chat is active.")
                 return
 
@@ -202,7 +202,7 @@ async def route_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         message = update.channel_post
     if not message or not message.document:
         return
-    if message.chat_id == CHAT_IDS.get("receipts"):
+    if str(message.chat_id) == CHAT_IDS.get("receipts"):
         await _handle_receipt_pdf(update, context)
         return
 
