@@ -1,4 +1,5 @@
 import json
+import inspect
 import logging
 import os
 import tempfile
@@ -22,6 +23,7 @@ from tools.receipt_tools import (
     receipt_extract_summary_from_pdf,
 )
 from tools.telegram_tools import markdown_v2_safe
+import automation_functions as automation_module
 
 load_dotenv()
 llm = get_llm()
@@ -54,6 +56,32 @@ RECEIPT_CATEGORY_OPTIONS = [
 ]
 
 
+def _load_automation_functions() -> Dict[str, Any]:
+    functions: Dict[str, Any] = {}
+    for name in dir(automation_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(automation_module, name)
+        if not inspect.isfunction(obj) or obj.__module__ != automation_module.__name__:
+            continue
+        signature = inspect.signature(obj)
+        has_required_params = any(
+            parameter.default is inspect._empty
+            and parameter.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+            for parameter in signature.parameters.values()
+        )
+        if not has_required_params:
+            functions[name] = obj
+    return functions
+
+
+AUTOMATION_FUNCTIONS = _load_automation_functions()
+
+
 async def _safe_log(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     logs_chat = CHAT_IDS.get("logs")
     if not logs_chat:
@@ -81,6 +109,28 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
         await message.reply_text(markdown_v2_safe(response, preserve_formatting=True), parse_mode="MarkdownV2")
     else:
         await message.reply_text("Sorry, I couldn't generate a response for that.")
+
+
+async def _handle_automation_text(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (message.text or message.caption or "").strip()
+    if not text:
+        return
+    func = AUTOMATION_FUNCTIONS.get(text)
+    if not func:
+        logger.info("Ignoring unknown automation command: %s", text)
+        await message.reply_text(f"Unknown automation command: `{text}`")
+        return
+
+    await _safe_log(context, f"[automation] Running: {text}")
+    try:
+        result = await asyncio.to_thread(func)
+        if result is None:
+            result = "✅ Automation completed."
+        await message.reply_text(str(result))
+    except Exception as exc:
+        logger.exception("Automation command failed: %s", text)
+        await _safe_log(context, f"[automation:error] {text}: {exc}")
+        await message.reply_text(f"Automation `{text}` failed.")
 
 
 async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,23 +218,22 @@ async def _handle_receipt_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.message
+    message = update.message or update.channel_post
     if not message:
-        if update.channel_post:
-            if str(update.channel_post.chat_id) == CHAT_IDS.get("logs"):
-                await update.channel_post.reply_text("Logs chat is active.")
-                return
-
-            if str(update.channel_post.chat_id) == CHAT_IDS.get("receipts"):
-                await update.channel_post.reply_text("Send a PDF file here to process receipts.")
-                return
-
-            if str(update.channel_post.chat_id) == CHAT_IDS.get("automations"):
-                await update.channel_post.reply_text("Automations chat is active.")
-                return
-
-            logger.info("Ignoring text from unregistered chat id: %s", update.channel_post.chat_id)
         return
+
+    if str(message.chat_id) == CHAT_IDS.get("automations"):
+        await _handle_automation_text(message, context)
+        return
+
+    if message.chat_id == int(CHAT_IDS.get("receipts", 0)):
+        await message.reply_text("Please send receipt PDFs as documents, not as text.")
+        return
+    
+    if message.chat_id == int(CHAT_IDS.get("logs", 0)):
+        await message.reply_text("This chat is for logs only. Please use the personal assistant chat for interactions.")
+        return
+
     if message.chat_id == int(CHAT_IDS.get("personal_assistant", 0)):
         await _handle_personal_assistant_text(update, context)
         return
