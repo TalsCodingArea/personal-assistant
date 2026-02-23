@@ -11,9 +11,15 @@ from tools.registry import get_tools
 from agent.memory import MemoryStore
 
 
+def _escape_prompt_braces(text: str) -> str:
+    # ChatPromptTemplate uses {} for variables, so escape literal braces in static text.
+    return text.replace("{", "{{").replace("}", "}}")
+
+
 def build_prompt(context_block: str):
+    system_text = _escape_prompt_braces(SYSTEM_PROMPT.strip() + "\n\n" + context_block.strip())
     return ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT.strip() + "\n\n" + context_block.strip()),
+        ("system", system_text),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),

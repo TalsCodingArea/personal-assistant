@@ -74,7 +74,8 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
 
     intent = await classify_intent(llm, message.text)
     agent = build_agent(llm, memory, intent)
-    out = await agent.ainvoke({"input": message.text}, config={"configurable": {"session_id": str(message.chat_id)}})
+    session_id = str(message.chat_id)
+    out = await agent.ainvoke({"input": message.text}, config={"configurable": {"session_id": session_id}})
     response = out.get("output", "")
     if response:
         await message.reply_text(markdown_v2_safe(response, preserve_formatting=True), parse_mode="MarkdownV2")
