@@ -196,7 +196,7 @@ def _extract_with_openai(
             temperature=0,
         )
         parsed = _parse_model_json(response.output_text)
-    if not content_probe["has_selectable_text"] or parsed.get("confidence", 0) < 0.5:
+    if not content_probe["has_selectable_text"] or parsed.get("confidence", 0) < 0.5 or "unreadable" in (parsed.get("reasoning") or "").lower() or parsed.get("vendor", None) is None:
         image_urls = _render_pdf_to_png_data_urls(pdf_bytes, max_pages=max_pages_for_ocr)
         image_inputs = [{"type": "input_image", "image_url": url} for url in image_urls]
         response = client.responses.create(
