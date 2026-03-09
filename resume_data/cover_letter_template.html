@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cover Letter — {{ name }}</title>
+  <style>
+    /* ---------------------------------------------------------------
+       WeasyPrint-compatible cover letter template.
+       A4, clean professional layout matching the resume aesthetic.
+    --------------------------------------------------------------- */
+
+    @page {
+      size: A4;
+      margin: 22mm 20mm 20mm 20mm;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10.5pt;
+      color: #1a1a1a;
+      line-height: 1.65;
+    }
+
+    /* ---- Sender header ------------------------------------------ */
+    .sender-block {
+      margin-bottom: 28px;
+    }
+
+    .sender-name {
+      font-size: 15pt;
+      font-weight: bold;
+      color: #0a2540;
+      letter-spacing: 0.3px;
+    }
+
+    .sender-contact {
+      font-size: 9pt;
+      color: #555;
+      margin-top: 3px;
+    }
+
+    .sender-contact a {
+      color: #0a6dc2;
+      text-decoration: none;
+    }
+
+    .contact-sep {
+      margin: 0 5px;
+      color: #ccc;
+    }
+
+    /* ---- Divider ------------------------------------------------- */
+    .divider {
+      border: none;
+      border-top: 1.2px solid #0a2540;
+      margin: 8px 0 20px 0;
+    }
+
+    /* ---- Date and salutation ------------------------------------- */
+    .letter-date {
+      font-size: 10pt;
+      color: #555;
+      margin-bottom: 16px;
+    }
+
+    .salutation {
+      font-size: 10.5pt;
+      margin-bottom: 14px;
+    }
+
+    /* ---- Body paragraphs ---------------------------------------- */
+    .body-content p {
+      margin-bottom: 12px;
+      font-size: 10.5pt;
+      text-align: justify;
+    }
+
+    /* ---- Closing ------------------------------------------------- */
+    .closing {
+      margin-top: 24px;
+    }
+
+    .closing-line {
+      font-size: 10.5pt;
+      margin-bottom: 32px; /* space for signature */
+    }
+
+    .signature-name {
+      font-size: 10.5pt;
+      font-weight: bold;
+      color: #0a2540;
+    }
+
+    .signature-contact {
+      font-size: 9pt;
+      color: #555;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ================================================================
+       SENDER HEADER
+  ================================================================= -->
+  <div class="sender-block">
+    <div class="sender-name">{{ name }}</div>
+    <div class="sender-contact">
+      {% if email %}<a href="mailto:{{ email }}">{{ email }}</a>{% endif %}
+      {% if phone %}<span class="contact-sep">|</span>{{ phone }}{% endif %}
+      {% if linkedin %}<span class="contact-sep">|</span><a href="{{ linkedin }}">LinkedIn</a>{% endif %}
+      {% if location %}<span class="contact-sep">|</span>{{ location }}{% endif %}
+    </div>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- ================================================================
+       DATE
+  ================================================================= -->
+  <div class="letter-date">{{ letter_date }}</div>
+
+  <!-- ================================================================
+       SALUTATION
+  ================================================================= -->
+  <div class="salutation">
+    Dear Hiring Manager,
+  </div>
+
+  <!-- ================================================================
+       BODY  (LLM-generated paragraphs, injected as HTML <p> tags)
+  ================================================================= -->
+  <div class="body-content">
+    {{ cover_letter_body }}
+  </div>
+
+  <!-- ================================================================
+       CLOSING
+  ================================================================= -->
+  <div class="closing">
+    <div class="closing-line">Warm regards,</div>
+    <div class="signature-name">{{ name }}</div>
+    <div class="signature-contact">
+      {% if email %}{{ email }}{% endif %}
+      {% if phone %} &nbsp;·&nbsp; {{ phone }}{% endif %}
+    </div>
+  </div>
+
+</body>
+</html>
