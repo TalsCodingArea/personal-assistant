@@ -1,13 +1,30 @@
+# Environment
 .env
 .env.*
-.venv/
-.DS_Store
-data/personal_assistant_memory.json
 
-# All cache files
+# Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+dist/
+build/
 
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Personal data — not for version control
+resume_data/user_profile.json
+resume_data/*.pdf
+personal_notes_examples/
+budget_data/
+data/
+
+# Notion config — contains database IDs and personal finance rules
 notion_config/
