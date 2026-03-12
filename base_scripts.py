@@ -40,7 +40,6 @@ def send_email(to: str, subject: str, body_text: Optional[str] = None, app_passw
     else:
         recipients = list(to)
 
-    msg = EmailMessage()
     gmail_email = os.environ["GMAIL_EMAIL"]
     msg = EmailMessage()
     msg["From"] = gmail_email
