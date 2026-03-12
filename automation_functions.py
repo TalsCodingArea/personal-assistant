@@ -23,7 +23,7 @@ def morning_summary():
 
     notion_client = Client(auth=os.environ["NOTION_API_KEY"])
     openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    last_90_days_data = get_notion_pages(notion_client, database_id="REDACTED_NOTION_DB_ID", filter=filter_dict)
+    last_90_days_data = get_notion_pages(notion_client, database_id=os.environ["DAY_RATING_DATABASE_ID"], filter=filter_dict)
     last_90_days_scores = [(entry['properties']["Day's Rating"]['formula']["number"], entry['properties']["Date"]["date"]["start"]) for entry in last_90_days_data]
     filter_dict = {
         "and": [
@@ -41,7 +41,7 @@ def morning_summary():
             }
         ]
     }
-    last_90_days_workouts = get_notion_pages(notion_client, database_id="REDACTED_NOTION_DB_ID", filter=filter_dict)
+    last_90_days_workouts = get_notion_pages(notion_client, database_id=os.environ["WORKOUTS_DATABASE_ID"], filter=filter_dict)
     last_90_days_workouts = [entry['properties']['Date']['date']['start'] for entry in last_90_days_workouts]
     prompt = f"""Each day I log a day score that is affected by how many tasks I've managed to complete and my workout streaks.
     The number of tasks I completed is multiplied by the percent of tasks completed that day and it's added to the current workout streak count (if I worked out that day)
@@ -113,7 +113,7 @@ def evaluate_expense(last_expense: str):
     for entry in clean_current_month_expenses:
         if entry.get('Actual') and entry['Actual']:
             entry["Amount"] = entry["Amount"] * entry["Actual"]
-    current_month_income = get_notion_pages(notion_client, database_id="REDACTED_NOTION_DB_ID", filter={
+    current_month_income = get_notion_pages(notion_client, database_id=os.environ["INCOME_DATABASE_ID"], filter={
         "and": [
             {
                 "property": "Date",

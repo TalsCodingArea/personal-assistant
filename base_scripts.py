@@ -41,18 +41,20 @@ def send_email(to: str, subject: str, body_text: Optional[str] = None, app_passw
         recipients = list(to)
 
     msg = EmailMessage()
-    msg["From"] = "REDACTED_GMAIL_EMAIL"
+    gmail_email = os.environ["GMAIL_EMAIL"]
+    msg = EmailMessage()
+    msg["From"] = gmail_email
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
     msg.set_content(body_text or "")
-    
+
     server = smtplib.SMTP("smtp.gmail.com", 587)
     try:
         server.set_debuglevel(1)  # Set to 1 for debug output
         server.ehlo()
         server.starttls()
         server.ehlo()
-        server.login("REDACTED_GMAIL_EMAIL", app_password)
+        server.login(gmail_email, app_password)
         server.send_message(msg)
     finally:
         server.quit()
