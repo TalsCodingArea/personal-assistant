@@ -41,7 +41,7 @@ def morning_summary():
             }
         ]
     }
-    last_90_days_workouts = get_notion_pages(notion_client, database_id=os.environ["WORKOUTS_DATABASE_ID"], filter=filter_dict)
+    last_90_days_workouts = get_notion_pages(notion_client, database_id=os.environ["PERSONAL_GROWTH_ENTRIES_DATABASE_ID"], filter=filter_dict)
     last_90_days_workouts = [entry['properties']['Date']['date']['start'] for entry in last_90_days_workouts]
     prompt = f"""Each day I log a day score that is affected by how many tasks I've managed to complete and my workout streaks.
     The number of tasks I completed is multiplied by the percent of tasks completed that day and it's added to the current workout streak count (if I worked out that day)
