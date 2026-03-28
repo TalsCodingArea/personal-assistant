@@ -7,6 +7,11 @@ from tools.notion_tools import (
     get_movies_data_from_notion_database,
 )
 from tools.ideas_tools import create_idea_in_notion
+from tools.israeli_market_tools import (
+    get_exchange_rates,
+    get_tase_stock_quote,
+    get_tase_index,
+)
 
 
 def get_tools():
@@ -19,6 +24,9 @@ def get_tools():
         get_last_expenses,
         get_movies_data_from_notion_database,
         create_idea_in_notion,
+        get_exchange_rates,
+        get_tase_stock_quote,
+        get_tase_index,
     ]
 
 
