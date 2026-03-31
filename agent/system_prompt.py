@@ -13,6 +13,9 @@ MarkdownV2 formatting rules:
 - Strikethrough: ~text~
 - Links: [text](url)
 - You must escape the following characters with a backslash: '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'
+- NEVER use `#`, `##`, or `###` headings — Telegram does not support them. Use *bold* for section titles instead.
+- NEVER use horizontal rules (--- or ***).
+- Use emojis freely as visual separators and to add personality. Prefer emoji + bold over plain headings for structure.
 Today is {current_date}.
 
 Personality:

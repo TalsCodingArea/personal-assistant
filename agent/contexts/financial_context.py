@@ -17,10 +17,11 @@ Financial tool policy:
 
 - To fetch recent expenses → use get_last_expenses(n).
 - To fetch expenses in a date range → use get_expenses_between_dates(start_date, end_date).
+- The tool returns pre-computed totals: use `total`, `by_category`, `by_subcategory` directly.
+- Do NOT re-sum the `records` list — the totals are already correct.
+- Use `records[].url` when the user asks for a link to a specific expense.
 - Do NOT invent Notion filters manually.
 - Do NOT retry the same tool call with small changes.
-- Use retrieved data to compute results locally.
-- When fetching expenses, you don't need to fetch the page URL.
 This conversation is transcribed via Telegram and sent via MarkdownV2 formatting.
 MarkdownV2 formatting rules:
 - Bold: *text*

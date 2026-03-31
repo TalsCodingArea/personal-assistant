@@ -28,7 +28,7 @@ from tools.notion_tools import (
 from tools.receipt_tools import (
     receipt_extract_summary_from_pdf,
 )
-from tools.telegram_tools import markdown_v2_safe
+from tools.telegram_tools import markdown_v2_safe, TelegramStatusCallback
 import automation_functions as automation_module
 
 load_dotenv()
@@ -107,6 +107,16 @@ def _load_automation_functions() -> Dict[str, Any]:
 
 
 AUTOMATION_FUNCTIONS = _load_automation_functions()
+
+
+async def _keep_typing(bot, chat_id: int, stop_event: asyncio.Event) -> None:
+    """Send 'typing' action every 4 seconds until stop_event is set."""
+    while not stop_event.is_set():
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception:
+            pass
+        await asyncio.sleep(4)
 
 
 async def _safe_log(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -294,16 +304,30 @@ async def _handle_personal_assistant_text(update: Update, context: ContextTypes.
 
     # Unified agent — decides which tools to use based on the conversation
     agent = _get_or_build_agent(chat_id)
+    status_msg = await message.reply_text("⏳ Working on it...")
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(_keep_typing(context.bot, message.chat_id, stop_typing))
     try:
+        callback = TelegramStatusCallback(context.bot, message.chat_id, status_msg.message_id)
         out = await agent.ainvoke(
             {"input": user_text},
-            config={"configurable": {"session_id": chat_id}},
+            config={
+                "configurable": {"session_id": chat_id},
+                "callbacks": [callback],
+            },
         )
     except Exception as exc:
         logger.exception("Agent error for chat %s", chat_id)
         await message.reply_text("Something went wrong — try again.")
         await _safe_log(context, f"[agent:error] {exc}")
         return
+    finally:
+        stop_typing.set()
+        await typing_task
+        try:
+            await context.bot.delete_message(chat_id=message.chat_id, message_id=status_msg.message_id)
+        except Exception:
+            pass
 
     response = out.get("output", "")
 

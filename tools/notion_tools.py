@@ -510,12 +510,24 @@ def notion_properties_from_receipt(receipt_json: Dict[str, object]) -> Dict[str,
 @tool
 def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]:
     """
-    Fetches expenses from a Notion database between two dates.
-    Use this tool to retrieve expense records for a given date range.
+    Fetches expenses from a Notion database between two dates and returns a structured summary.
+
+    The return value contains:
+    - period: the queried date range
+    - total: pre-computed sum of all expense amounts (ILS)
+    - count: number of expense records
+    - by_category: total amount per category (use this for category comparisons)
+    - by_subcategory: total amount per sub-category (use this for sub-category comparisons)
+    - records: individual expense records, each with: date, description, amount, category,
+               sub_category, and url (Notion page link — use this when the user asks for
+               a link to a specific expense)
+
+    Use the pre-computed totals (total, by_category, by_subcategory) directly.
+    Do NOT re-sum the records yourself.
+
     Args:
         start_date: The start date in ISO format (YYYY-MM-DD).
         end_date: The end date in ISO format (YYYY-MM-DD).
-    Returns:     A dictionary containing the raw Notion API response with expenses data.
     """
     start_dt = _parse_iso_date_with_clamp(start_date, "start_date")
     end_dt = _parse_iso_date_with_clamp(end_date, "end_date")
@@ -523,41 +535,63 @@ def get_expenses_between_dates(start_date: str, end_date: str) -> Dict[str, Any]
     if end_dt < start_dt:
         raise ValueError("`end_date` must be on or after `start_date`.")
 
-    # Inclusive date-range for day-level queries:
-    # Date >= start_date and Date < (end_date + 1 day)
     filter_dict = {
         "and": [
-            {
-                "property": "Date",
-                "date": {
-                    "on_or_after": start_dt.isoformat(),
-                }
-            },
-            {
-                "property": "Date",
-                "date": {
-                    "before": (end_dt + timedelta(days=1)).isoformat(),
-                }
-            },
-            {
-                "property": "Tag",
-                "multi_select": {
-                    "contains": "Tal 👨🏻"
-                }
-            }
+            {"property": "Date", "date": {"on_or_after": start_dt.isoformat()}},
+            {"property": "Date", "date": {"before": (end_dt + timedelta(days=1)).isoformat()}},
+            {"property": "Tag", "multi_select": {"contains": "Tal 👨🏻"}}
         ]
     }
     expenses_database_id = os.getenv("EXPENSES_DATABASE_ID")
     if not _is_non_empty_string(expenses_database_id):
         raise ValueError("Missing EXPENSES_DATABASE_ID environment variable.")
-    expenses_data = notion_get_database_pages.invoke(
-        {"database_id": expenses_database_id, "filter": filter_dict}
-    )
-    expenses_data = _raw_notion_response_to_dict(["Description", "Final", "Category", "Sub Category", "Date"], expenses_data)
-    for expense in expenses_data:
-        expense["Amount"] = expense.get("Final", 0)
-        expense.pop("Final", None)
-    return expenses_data
+
+    raw = notion_get_database_pages.invoke({"database_id": expenses_database_id, "filter": filter_dict})
+    rows = _raw_notion_response_to_dict(["Description", "Final", "Category", "Sub Category", "Date"], raw)
+
+    records = []
+    by_category: Dict[str, float] = {}
+    by_subcategory: Dict[str, float] = {}
+    total = 0.0
+
+    for row in rows:
+        amount = row.get("Final") or 0
+        if not isinstance(amount, (int, float)):
+            amount = 0.0
+        total += amount
+
+        categories = row.get("Category") or []
+        if isinstance(categories, str):
+            categories = [categories]
+        subcategories = row.get("Sub Category") or []
+        if isinstance(subcategories, str):
+            subcategories = [subcategories]
+
+        for cat in categories:
+            if cat:
+                by_category[cat] = round(by_category.get(cat, 0.0) + amount, 2)
+        for sub in subcategories:
+            if sub:
+                by_subcategory[sub] = round(by_subcategory.get(sub, 0.0) + amount, 2)
+
+        records.append({
+            "date": row.get("Date"),
+            "description": row.get("Description"),
+            "amount": amount,
+            "category": categories,
+            "sub_category": subcategories,
+            "url": row.get("url"),
+        })
+
+    print(f"Total expenses from {start_dt} to {end_dt}: {round(total, 2)}")
+    return {
+        "period": {"start": start_dt.isoformat(), "end": end_dt.isoformat()},
+        "total": round(total, 2),
+        "count": len(records),
+        "by_category": by_category,
+        "by_subcategory": by_subcategory,
+        "records": records,
+    }
 
 
 
