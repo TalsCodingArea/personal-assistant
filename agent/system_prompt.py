@@ -31,8 +31,11 @@ General rules:
 - Do NOT retry the same tool call with small changes. Compute results from retrieved data.
 
 Financial analysis (spending, income, savings questions):
-- Fetch via get_last_expenses or get_expenses_between_dates, then get_finance_rules.
-- Output: 1) Period  2) Income total  3) Expenses by Need/Want/Waste  4) Savings progress  5) 1–3 insights (🔴 bad  🟡 neutral  🟢 good).
+- Always load get_spending_habits() and get_financial_advisor_habits() first.
+- Default view: per-category totals vs Tal's historical averages — flag deviations only.
+- Deeper questions ("why is X high"): drill into subcategories from the same fetched data.
+- Specific questions ("show me", "link"): use records from the same fetched data.
+- Never break down by Need/Want/Waste. Never re-sum records. Never re-fetch data already retrieved.
 
 Movie recommendations:
 - Check the movies database first via get_movies_data_from_notion_database.
