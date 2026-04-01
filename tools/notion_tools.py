@@ -1,4 +1,5 @@
 import os
+import json
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -779,3 +780,80 @@ def notion_get_database_pages(
         "count": min(len(results), max_results),
         "results": results[:max_results],
     }
+
+
+_BUDGET_DATA_DIR = Path(__file__).parent.parent / "budget_data"
+_SPENDING_HABITS_EMPTY = {"last_updated": None, "months_tracked": 0, "by_subcategory": {}}
+_ADVISOR_HABITS_EMPTY = {"last_updated": None, "rules": []}
+
+
+def _read_json_or_default(path: Path, default: dict) -> dict:
+    """Read a JSON file, returning default if the file is missing or empty."""
+    if not path.exists():
+        return dict(default)
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+        return json.loads(content) if content else dict(default)
+    except (json.JSONDecodeError, OSError):
+        return dict(default)
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@tool
+def get_spending_habits() -> Dict[str, Any]:
+    """
+    Returns Tal's historical spending habits per subcategory, built from monthly expense data.
+
+    Each subcategory entry contains:
+    - avg: rolling average monthly spend (ILS)
+    - min: lowest month on record
+    - max: highest month on record
+    - last: last month's spend
+
+    Use this BEFORE any financial recap to understand what is normal for Tal.
+    A subcategory spending close to its avg is NOT a problem — do not flag it.
+    Only flag subcategories that deviate significantly (>20%) above their avg.
+    If months_tracked is 0, no history exists yet — skip habit comparison entirely.
+    """
+    return _read_json_or_default(_BUDGET_DATA_DIR / "spending_habits.json", _SPENDING_HABITS_EMPTY)
+
+
+@tool
+def get_financial_advisor_habits() -> Dict[str, Any]:
+    """
+    Returns the financial rules and targets Tal has explicitly stated he wants to follow.
+
+    These are personal commitments (e.g. "keep restaurants under 500 ILS/month").
+    Use these as hard constraints when evaluating spending — flag any rule that is breached.
+    If rules list is empty, skip advisor rule checks.
+    """
+    return _read_json_or_default(_BUDGET_DATA_DIR / "financial_advisor_habits.json", _ADVISOR_HABITS_EMPTY)
+
+
+@tool
+def update_financial_advisor_habit(rule: str) -> Dict[str, Any]:
+    """
+    Saves a new financial rule or target that Tal wants to follow.
+
+    Call this whenever Tal states a spending intention or financial goal in conversation,
+    such as:
+    - "I want to keep restaurants under 500 ILS a month"
+    - "From now on, save at least 15% of my income"
+    - "Stop spending more than 200 ILS on takeout"
+
+    Args:
+        rule: A plain-text description of the financial rule or target.
+    """
+    if not _is_non_empty_string(rule):
+        raise ValueError("`rule` must be a non-empty string.")
+
+    path = _BUDGET_DATA_DIR / "financial_advisor_habits.json"
+    habits = _read_json_or_default(path, _ADVISOR_HABITS_EMPTY)
+    habits["rules"].append({"rule": rule.strip(), "added": datetime.now().strftime("%Y-%m-%d")})
+    habits["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+    _write_json(path, habits)
+    return {"ok": True, "total_rules": len(habits["rules"])}

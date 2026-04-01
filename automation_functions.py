@@ -2,7 +2,11 @@ from base_scripts import *
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import os
+import json
+from pathlib import Path
 load_dotenv()
+
+_BUDGET_DATA_DIR = Path(__file__).parent / "budget_data"
 
 GMAIL_SMTP_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 notion_client = Client(auth=os.environ["NOTION_API_KEY"])
@@ -187,6 +191,117 @@ def evaluate_expense(last_expense: str):
     answer = ask_openai(expenses_goal, system_message=system_message)
 
     return answer.replace("**", "*")
+def backfill_spending_habits():
+    """
+    One-time backfill: fetches January and February 2026 expenses and seeds
+    budget_data/spending_habits.json with a 2-month baseline.
+    Safe to run multiple times — skips a month if it was already tracked.
+    """
+    from tools.notion_tools import get_expenses_between_dates
+
+    months = [
+        ("2026-01-01", "2026-01-31", "2026-01"),
+        ("2026-02-01", "2026-02-28", "2026-02"),
+    ]
+
+    habits_path = _BUDGET_DATA_DIR / "spending_habits.json"
+    habits_path.parent.mkdir(parents=True, exist_ok=True)
+    if habits_path.exists() and habits_path.read_text(encoding="utf-8").strip():
+        habits = json.loads(habits_path.read_text(encoding="utf-8"))
+    else:
+        habits = {"last_updated": None, "months_tracked": 0, "by_subcategory": {}}
+
+    processed = []
+    for start, end, label in months:
+        data = get_expenses_between_dates.invoke({"start_date": start, "end_date": end})
+        months_tracked = habits.get("months_tracked", 0)
+        existing = habits.get("by_subcategory", {})
+
+        for sub, amount in data.get("by_subcategory", {}).items():
+            if sub in existing:
+                prev_avg = existing[sub]["avg"]
+                prev_min = existing[sub]["min"]
+                prev_max = existing[sub]["max"]
+                new_avg = round(((prev_avg * months_tracked) + amount) / (months_tracked + 1), 2)
+                existing[sub] = {
+                    "avg": new_avg,
+                    "min": round(min(prev_min, amount), 2),
+                    "max": round(max(prev_max, amount), 2),
+                    "last": round(amount, 2),
+                }
+            else:
+                existing[sub] = {
+                    "avg": round(amount, 2),
+                    "min": round(amount, 2),
+                    "max": round(amount, 2),
+                    "last": round(amount, 2),
+                }
+
+        habits["by_subcategory"] = existing
+        habits["months_tracked"] = months_tracked + 1
+        habits["last_updated"] = label
+        processed.append(label)
+
+    habits_path.write_text(json.dumps(habits, ensure_ascii=False, indent=2), encoding="utf-8")
+    return f"✅ Backfill complete — seeded {len(processed)} months: {', '.join(processed)}. {len(habits['by_subcategory'])} subcategories tracked."
+
+
+def update_spending_habits():
+    """
+    Fetches last month's expenses from Notion, computes per-subcategory stats,
+    and updates budget_data/spending_habits.json with rolling averages.
+    Run automatically on the 1st of each month.
+    """
+    from tools.notion_tools import get_expenses_between_dates
+
+    today = datetime.now()
+    first_of_last_month = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+    last_of_last_month = today.replace(day=1) - timedelta(days=1)
+    month_label = first_of_last_month.strftime("%Y-%m")
+
+    data = get_expenses_between_dates.invoke({
+        "start_date": first_of_last_month.strftime("%Y-%m-%d"),
+        "end_date": last_of_last_month.strftime("%Y-%m-%d"),
+    })
+
+    habits_path = _BUDGET_DATA_DIR / "spending_habits.json"
+    habits_path.parent.mkdir(parents=True, exist_ok=True)
+    if habits_path.exists() and habits_path.read_text(encoding="utf-8").strip():
+        habits = json.loads(habits_path.read_text(encoding="utf-8"))
+    else:
+        habits = {"last_updated": None, "months_tracked": 0, "by_subcategory": {}}
+
+    months_tracked = habits.get("months_tracked", 0)
+    existing = habits.get("by_subcategory", {})
+
+    for sub, amount in data.get("by_subcategory", {}).items():
+        if sub in existing:
+            prev_avg = existing[sub]["avg"]
+            prev_min = existing[sub]["min"]
+            prev_max = existing[sub]["max"]
+            new_avg = round(((prev_avg * months_tracked) + amount) / (months_tracked + 1), 2)
+            existing[sub] = {
+                "avg": new_avg,
+                "min": round(min(prev_min, amount), 2),
+                "max": round(max(prev_max, amount), 2),
+                "last": round(amount, 2),
+            }
+        else:
+            existing[sub] = {
+                "avg": round(amount, 2),
+                "min": round(amount, 2),
+                "max": round(amount, 2),
+                "last": round(amount, 2),
+            }
+
+    habits["by_subcategory"] = existing
+    habits["months_tracked"] = months_tracked + 1
+    habits["last_updated"] = month_label
+    habits_path.write_text(json.dumps(habits, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return f"✅ Spending habits updated for {month_label} — {len(existing)} subcategories tracked."
+
+
 properties = {
     "Description": {
         "type": "title",
